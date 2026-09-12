@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQL Server vs Elasticsearch — 200,000 products</title>
+<style>
+  :root {
+    --purple:#6740BA; --deep:#380D6F; --violet:#A077F8; --lav:#F2ECFC; --lav2:#E0D0FA;
+    --coral:#EF5366; --teal:#0F8B7E; --teal-bg:#E6F4F2; --ink:#2A2A3E; --muted:#6E6B81; --line:#DCD6EA;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI",system-ui,sans-serif;background:#fff;color:var(--ink);padding:28px 22px 60px;max-width:1180px;margin:0 auto}
+  h1{font-size:25px;color:var(--deep);letter-spacing:-.3px}
+  .sub{color:var(--muted);font-size:14.5px;margin:5px 0 22px}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+  input[type=text]{flex:1;min-width:260px;padding:12px 14px;font-size:15px;border:1.6px solid var(--lav2);border-radius:9px;outline:none}
+  input[type=text]:focus{border-color:var(--violet)}
+  button{padding:12px 20px;font-size:15px;font-weight:600;border:0;border-radius:9px;background:var(--purple);color:#fff;cursor:pointer}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  .opts{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13.5px;color:var(--muted);margin-bottom:18px}
+  .opts label{display:flex;align-items:center;gap:6px;cursor:pointer}
+  .opts input[type=number]{width:90px;padding:6px 8px;border:1.4px solid var(--lav2);border-radius:6px}
+  #suggest{position:relative}
+  .sg{position:absolute;z-index:5;background:#fff;border:1.5px solid var(--lav2);border-radius:9px;width:100%;max-width:560px;box-shadow:0 8px 24px rgba(56,13,111,.12);overflow:hidden}
+  .sg div{padding:9px 13px;font-size:14px;cursor:pointer;border-bottom:1px solid var(--lav)}
+  .sg div:last-child{border-bottom:0}
+  .sg div:hover{background:var(--lav)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:6px}
+  @media(max-width:860px){.cols{grid-template-columns:1fr}}
+  .panel{border:1.6px solid var(--lav2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+  .panel.es{border-color:#C9E3DE}
+  .phead{padding:12px 15px;color:#fff;display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .panel .phead{background:var(--purple)}
+  .panel.es .phead{background:var(--teal)}
+  .pname{font-size:15px;font-weight:700}
+  .pengine{font-size:11px;letter-spacing:.9px;text-transform:uppercase;opacity:.85}
+  .timing{padding:11px 15px;background:var(--lav);border-bottom:1px solid var(--lav2);display:flex;gap:18px;flex-wrap:wrap;font-size:13px}
+  .panel.es .timing{background:var(--teal-bg);border-color:#C9E3DE}
+  .timing b{font-size:19px;color:var(--deep);display:block}
+  .body{padding:8px 15px 15px;flex:1;min-height:120px}
+  .row{padding:9px 0;border-bottom:1px solid var(--lav);font-size:14px}
+  .row:last-child{border-bottom:0}
+  .row .nm{font-weight:600}
+  .row .meta{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .empty{padding:22px 0;color:var(--coral);font-size:14px;font-weight:600}
+  .facets{margin-top:12px;padding-top:11px;border-top:1px solid var(--lav2)}
+  .facets h4{font-size:11px;letter-spacing:.9px;text-transform:uppercase;color:var(--teal);margin-bottom:7px}
+  .chip{display:inline-block;background:var(--teal-bg);color:var(--teal);border-radius:999px;padding:3px 10px;font-size:12.5px;margin:0 5px 5px 0;cursor:pointer}
+  .chip.on{background:var(--teal);color:#fff}
+  .note{margin-top:20px;font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:13px;line-height:1.55}
+  .hint{display:inline-block;background:var(--lav);color:var(--purple);border-radius:6px;padding:2px 8px;font-size:12.5px;margin-right:6px;cursor:pointer}
+</style>
+</head>
+<body>
+  <h1>SQL Server vs Elasticsearch</h1>
+  <div class="sub">The same search, the same 200,000 products, side by side. Timings are measured by the API on every request.</div>
+
+  <div id="suggest">
+    <div class="controls">
+      <input id="q" type="text" placeholder="Try: wireless headphones" autocomplete="off">
+      <button id="go">Search both</button>
+    </div>
+    <div id="sg"></div>
+  </div>
+
+  <div class="opts">
+    <label><input type="checkbox" id="fuzzy"> typo tolerance (Elasticsearch only)</label>
+    <label>max price <input type="number" id="maxPrice" placeholder="any" min="0"></label>
+    <span>
+      try:
+      <span class="hint" data-q="wireless headphones">wireless headphones</span>
+      <span class="hint" data-q="wireles headphone" data-fuzzy="1">wireles headphone (typo)</span>
+      <span class="hint" data-q="television">television (synonym of tv)</span>
+    </span>
+  </div>
+
+  <div class="cols">
+    <div class="panel">
+      <div class="phead"><span class="pname">SQL Server</span><span class="pengine">LIKE '%term%'</span></div>
+      <div class="timing"><span>elapsed<b id="sqlMs">—</b></span><span>results<b id="sqlCount">—</b></span></div>
+      <div class="body" id="sqlBody"></div>
+    </div>
+    <div class="panel es">
+      <div class="phead"><span class="pname">Elasticsearch</span><span class="pengine">inverted index</span></div>
+      <div class="timing"><span>elapsed<b id="esMs">—</b></span><span>cluster took<b id="esTook">—</b></span><span>results<b id="esCount">—</b></span></div>
+      <div class="body" id="esBody"></div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>What to watch.</b> Elapsed time is measured by the API around each call, so it includes the network and
+    deserialization — not just engine time. <b>cluster took</b> is what Elasticsearch itself reported.
+    Try a typo with tolerance on: SQL Server returns nothing, because <code>LIKE</code> has no concept of "close enough".
+    Then click a brand facet — SQL Server has no equivalent without another query per filter.
+  </div>
+
+<script>
+let brandFilter = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const money = n => '$' + Number(n).toFixed(2);
+
+function rows(items) {
+  if (!items.length) return '<div class="empty">No results</div>';
+  return items.map(p => `<div class="row">
+      <div class="nm">${esc(p.name)}</div>
+      <div class="meta">${esc(p.brand)} &middot; ${esc(p.sku)} &middot; ${money(p.price)}</div>
+    </div>`).join('');
+}
+
+function facets(f) {
+  if (!f) return '';
+  const chips = Object.entries(f).slice(0, 8).map(([k, v]) =>
+    `<span class="chip ${brandFilter === k ? 'on' : ''}" data-brand="${esc(k)}">${esc(k)} (${v})</span>`).join('');
+  return `<div class="facets"><h4>Brand facets — one request, no extra queries</h4>${chips}</div>`;
+}
+
+async function search() {
+  const q = $('q').value.trim();
+  if (!q) return;
+  $('go').disabled = true;
+  $('sqlBody').innerHTML = $('esBody').innerHTML = '<div class="meta" style="padding:14px 0">running…</div>';
+  $('sqlMs').textContent = $('esMs').textContent = '…';
+
+  const price = $('maxPrice').value;
+  const esUrl = `/api/search/elastic?q=${encodeURIComponent(q)}&fuzzy=${$('fuzzy').checked}`
+    + (price ? `&maxPrice=${price}` : '') + (brandFilter ? `&brand=${encodeURIComponent(brandFilter)}` : '');
+
+  // Fired together so the difference is visible in real time.
+  const esP = fetch(esUrl).then(r => r.json());
+  const sqlP = fetch(`/api/search/sql?q=${encodeURIComponent(q)}`).then(r => r.json());
+
+  esP.then(d => {
+    $('esMs').textContent = d.elapsedMs + ' ms';
+    $('esTook').textContent = (d.tookMs ?? '—') + ' ms';
+    $('esCount').textContent = d.count;
+    $('esBody').innerHTML = rows(d.items) + facets(d.facets);
+    document.querySelectorAll('.chip').forEach(c => c.onclick = () => {
+      brandFilter = brandFilter === c.dataset.brand ? null : c.dataset.brand;
+      search();
+    });
+  });
+
+  sqlP.then(d => {
+    $('sqlMs').textContent = d.elapsedMs + ' ms';
+    $('sqlCount').textContent = d.count;
+    $('sqlBody').innerHTML = rows(d.items);
+  });
+
+  await Promise.allSettled([esP, sqlP]);
+  $('go').disabled = false;
+}
+
+let sgTimer;
+$('q').addEventListener('input', () => {
+  clearTimeout(sgTimer);
+  const v = $('q').value.trim();
+  if (v.length < 2) { $('sg').innerHTML = ''; return; }
+  sgTimer = setTimeout(async () => {
+    const d = await fetch(`/api/suggest?q=${encodeURIComponent(v)}`).then(r => r.json());
+    $('sg').innerHTML = d.items?.length
+      ? `<div class="sg">${d.items.map(i => `<div data-n="${esc(i.name)}">${esc(i.name)}</div>`).join('')}</div>`
+      : '';
+    document.querySelectorAll('.sg div').forEach(el => el.onclick = () => {
+      $('q').value = el.dataset.n; $('sg').innerHTML = ''; search();
+    });
+  }, 120);
+});
+
+// Deep-linkable: /?q=wireless+headphones&fuzzy=1 runs the search on load.
+(function fromUrl() {
+  const p = new URLSearchParams(location.search);
+  if (!p.get('q')) return;
+  $('q').value = p.get('q');
+  $('fuzzy').checked = p.get('fuzzy') === '1';
+  if (p.get('maxPrice')) $('maxPrice').value = p.get('maxPrice');
+  search();
+})();
+
+$('go').onclick = () => { $('sg').innerHTML = ''; search(); };
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter') { $('sg').innerHTML = ''; search(); } });
+document.querySelectorAll('.hint').forEach(h => h.onclick = () => {
+  $('q').value = h.dataset.q;
+  $('fuzzy').checked = h.dataset.fuzzy === '1';
+  brandFilter = null;
+  $('sg').innerHTML = '';
+  search();
+});
+</script>
+</body>
+</html>
