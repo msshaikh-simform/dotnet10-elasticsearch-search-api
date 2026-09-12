@@ -16,6 +16,17 @@ var masterConn  = ProductSearch.Api.Env.SqlMasterConnectionString;
 var catalogConn = ProductSearch.Api.Env.SqlConnectionString;
 var esUrl       = ProductSearch.Api.Env.ElasticsearchUrl;
 
+var elastic = new ElasticsearchClient(new ElasticsearchClientSettings(new Uri(esUrl))
+    .Authentication(new BasicAuthentication(
+        ProductSearch.Api.Env.ElasticsearchUsername, ProductSearch.Api.Env.ElasticsearchPassword))
+    .RequestTimeout(TimeSpan.FromMinutes(5)));
+
+// Check both engines before generating anything. Without this, a stopped
+// Elasticsearch container is only discovered after a minute of work, and the
+// failure arrives as a raw stack trace.
+if (!await PreflightAsync(masterConn, elastic, esUrl))
+    return 1;
+
 Console.WriteLine($"Seeding {count:N0} products...");
 var total = Stopwatch.StartNew();
 
@@ -102,9 +113,7 @@ await using (var db = new SqlConnection(catalogConn))
 Console.WriteLine($"  SQL Server loaded in {sw.ElapsedMilliseconds:N0} ms");
 
 // ---- 4. Bulk index into Elasticsearch ---------------------------------------
-var client = new ElasticsearchClient(new ElasticsearchClientSettings(new Uri(esUrl))
-    .Authentication(new BasicAuthentication(ProductSearch.Api.Env.ElasticsearchUsername, ProductSearch.Api.Env.ElasticsearchPassword))
-    .RequestTimeout(TimeSpan.FromMinutes(5)));
+var client = elastic;
 
 await ProductSearch.Api.ProductIndex.EnsureCreatedAsync(client);
 
@@ -148,6 +157,63 @@ foreach (var batch in products.Select((p, i) => (p, i)).GroupBy(x => x.i / 5_000
 await client.Indices.RefreshAsync(ProductSearch.Api.ProductIndex.CurrentIndex);
 Console.WriteLine($"\r  Elasticsearch indexed in {sw.ElapsedMilliseconds:N0} ms ({failures} failures)   ");
 Console.WriteLine($"Done in {total.Elapsed.TotalSeconds:N1}s");
+
+if (failures > 0)
+{
+    Console.Error.WriteLine($"\n  {failures:N0} documents failed to index. Search results will be incomplete.");
+    return 2;
+}
+
+Console.WriteLine("\n  Next: dotnet run --project src/ProductSearch.Api -c Release");
+return 0;
+
+// ---- Preflight ---------------------------------------------------------------
+
+static async Task<bool> PreflightAsync(string sqlConnection, ElasticsearchClient elastic, string esUrl)
+{
+    var problems = new List<string>();
+
+    try
+    {
+        await using var conn = new SqlConnection(sqlConnection);
+        await conn.OpenAsync();
+    }
+    catch (SqlException ex)
+    {
+        problems.Add(ex.Number switch
+        {
+            18456 => "SQL Server rejected the login. If the container only just started, wait a few seconds "
+                   + "and try again - it accepts connections before authentication is fully ready.",
+            _ => $"Cannot reach SQL Server: {ex.Message.Split('\n')[0]}\n"
+               + "    Start it with: docker compose up -d\n"
+               + "    SQL Server takes longer to start than Elasticsearch, so give it a moment."
+        });
+    }
+    catch (Exception ex)
+    {
+        problems.Add($"Cannot reach SQL Server: {ex.Message.Split('\n')[0]}\n    Try: docker compose up -d");
+    }
+
+    try
+    {
+        var ping = await elastic.PingAsync();
+        if (!ping.IsValidResponse)
+            problems.Add($"Elasticsearch at {esUrl} did not respond to a ping.\n"
+                       + "    It needs roughly 60 seconds to start. Try: docker compose up -d");
+    }
+    catch (Exception ex)
+    {
+        problems.Add($"Cannot reach Elasticsearch at {esUrl}: {ex.Message.Split('\n')[0]}\n"
+                   + "    Start it with: docker compose up -d\n"
+                   + "    Check readiness with: curl -u elastic:changeme http://localhost:9200/_cluster/health");
+    }
+
+    if (problems.Count == 0) return true;
+
+    Console.Error.WriteLine("\n  Cannot seed - the required services are not available:\n");
+    foreach (var p in problems) Console.Error.WriteLine($"  - {p}\n");
+    return false;
+}
 
 internal sealed class ProductRow
 {

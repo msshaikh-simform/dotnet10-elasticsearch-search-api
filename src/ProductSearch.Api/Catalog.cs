@@ -78,11 +78,12 @@ public sealed record ProductSearchRequest
 /// <summary>A single result row, identical whichever engine produced it.</summary>
 public sealed record ProductHit(int Id, string Sku, string Name, string Brand, decimal Price);
 
-/// <summary>A search response, including both timings so they can be compared.</summary>
-/// <param name="Engine">Which engine answered: "elasticsearch" or "sql".</param>
-/// <param name="ElapsedMs">Measured by the API - includes network and deserialization.</param>
-/// <param name="TookMs">Reported by Elasticsearch itself. Null for SQL Server.</param>
-/// <param name="HasMore">Whether another page exists.</param>
+/// <summary>
+/// A search response, including both timings so they can be compared:
+/// <c>ElapsedMs</c> is measured by the API and includes network and
+/// deserialization, while <c>TookMs</c> is what Elasticsearch itself reported
+/// (null for SQL Server). <c>HasMore</c> indicates whether another page exists.
+/// </summary>
 public sealed record SearchResults(
     string Engine,
     string Query,

@@ -99,7 +99,7 @@ app.MapOpenApi();
 
 // ---- The comparison: the same feature, two engines -------------------------
 
-/// <summary>Search the catalog with Elasticsearch. The primary endpoint.</summary>
+// Search the catalog with Elasticsearch. The primary endpoint.
 app.MapGet("/api/search", async (
     [AsParameters] ProductSearchRequest request, ElasticSearchService es, CancellationToken ct) =>
         Results.Ok(await es.SearchAsync(request, ct)))
@@ -107,7 +107,7 @@ app.MapGet("/api/search", async (
     .WithSummary("Search products using Elasticsearch")
     .WithDescription("Full-text search with filters, facet counts, optional typo tolerance and paging.");
 
-/// <summary>The SQL Server baseline, kept only so the two can be compared.</summary>
+// The SQL Server baseline, kept only so the two can be compared.
 app.MapGet("/api/search/sql", async (
     [AsParameters] ProductSearchRequest request, SqlSearchService sql, CancellationToken ct) =>
         Results.Ok(await sql.SearchAsync(request.Term, request.PageSize, request.PageNumber, ct)))
@@ -115,7 +115,7 @@ app.MapGet("/api/search/sql", async (
     .WithSummary("Search products using SQL Server LIKE (baseline)")
     .WithDescription("Comparison baseline only. Scans every row; no ranking, facets or typo tolerance.");
 
-/// <summary>Type-ahead suggestions.</summary>
+// Type-ahead suggestions.
 app.MapGet("/api/suggest", async (
     [AsParameters] SuggestRequest request, ElasticSearchService es, CancellationToken ct) =>
         Results.Ok(await es.SuggestAsync(request.Term, ct)))
@@ -123,7 +123,7 @@ app.MapGet("/api/suggest", async (
     .WithSummary("Autocomplete suggestions")
     .WithDescription("Prefix matching over a search_as_you_type field, fast enough to run on every keystroke.");
 
-/// <summary>Fetch one product - the detail view behind a search result.</summary>
+// Fetch one product - the detail view behind a search result.
 app.MapGet("/api/products/{id:int}", async (
     int id, ElasticSearchService es, CancellationToken ct) =>
         await es.GetByIdAsync(id, ct) is { } hit
@@ -133,7 +133,7 @@ app.MapGet("/api/products/{id:int}", async (
     .WithName("GetProduct")
     .WithSummary("Get a single product by id");
 
-/// <summary>Exact indexed lookup - the case SQL Server wins.</summary>
+// Exact indexed lookup - the case SQL Server wins.
 app.MapGet("/api/lookup/sql", async (
     [FromQuery] string sku, SqlSearchService sql, CancellationToken ct) =>
         Results.Ok(await sql.GetBySkuAsync(sku, ct)))
@@ -141,7 +141,7 @@ app.MapGet("/api/lookup/sql", async (
     .WithSummary("Exact SKU lookup against SQL Server")
     .WithDescription("Included to show where a relational database is the better tool.");
 
-/// <summary>Dependency health, including whether any data has been indexed.</summary>
+// Dependency health, including whether any data has been indexed.
 app.MapGet("/api/health", async (Diagnostics diagnostics, CancellationToken ct) =>
 {
     var report = await diagnostics.CheckAsync(ct);

@@ -280,6 +280,21 @@ and every search returns zero with no explanation. So the POC checks its own dep
   The API will start, but searches return nothing until you seed.
 ```
 
+**In the seeder**, both engines are checked *before* 200,000 products are generated, so a stopped container is
+reported in a second rather than after a minute of wasted work. It exits with a non-zero code, which matters if
+you ever wire this into a script:
+
+```
+  Cannot seed - the required services are not available:
+
+  - Cannot reach SQL Server: A network-related or instance-specific error occurred...
+    Start it with: docker compose up -d
+    SQL Server takes longer to start than Elasticsearch, so give it a moment.
+```
+
+On success it tells you what to run next. Exit codes: `0` success, `1` dependencies unavailable,
+`2` seeded but some documents failed to index.
+
 **In the API**, every failure is a `ProblemDetails` response with a fix, not a stack trace:
 
 ```jsonc
