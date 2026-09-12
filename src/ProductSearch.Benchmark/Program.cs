@@ -7,6 +7,8 @@ using ProductSearch.Api;
 // Reports p50/p95/p99 and throughput at several concurrency levels, because
 // single-query latency hides the failure mode that actually bites in production.
 
+System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+
 var requests = ArgOr("--requests", 50);
 int[] concurrency = [1, 5, 20];
 string[] queries = ["wireless", "bluetooth headphone", "gaming laptop", "sony speaker", "portable studio"];
@@ -23,8 +25,8 @@ Console.WriteLine($"Dataset: 200,000 products | {requests} requests per level | 
 Console.WriteLine("Warming up...");
 for (var i = 0; i < 5; i++)
 {
-    await sqlSvc.SearchAsync(queries[i % queries.Length], 20, default);
-    await esSvc.SearchAsync(queries[i % queries.Length], null, null, false, 20, default);
+    await sqlSvc.SearchAsync(queries[i % queries.Length], 20, 1, default);
+    await esSvc.SearchAsync(new ProductSearchRequest { Q = queries[i % queries.Length], Size = 20 }, default);
 }
 
 var rows = new List<Row>();
@@ -33,10 +35,10 @@ foreach (var c in concurrency)
 {
     Console.WriteLine($"\nConcurrency {c}...");
     rows.Add(await RunAsync("SQL Server", c, requests, queries,
-        (q, ct) => sqlSvc.SearchAsync(q, 20, ct)));
+        (q, ct) => sqlSvc.SearchAsync(q, 20, 1, ct)));
     Console.WriteLine($"  SQL done");
     rows.Add(await RunAsync("Elasticsearch", c, requests, queries,
-        (q, ct) => esSvc.SearchAsync(q, null, null, false, 20, ct)));
+        (q, ct) => esSvc.SearchAsync(new ProductSearchRequest { Q = q, Size = 20 }, ct)));
     Console.WriteLine($"  Elasticsearch done");
 }
 
@@ -45,7 +47,7 @@ Console.WriteLine("\nExact SKU lookup (concurrency 1)...");
 var skuSql = await RunAsync("SQL Server", 1, requests, ["SKU-0100000"],
     (q, ct) => sqlSvc.GetBySkuAsync(q, ct));
 var skuEs = await RunAsync("Elasticsearch", 1, requests, ["SKU-0100000"],
-    (q, ct) => esSvc.SearchAsync(q, null, null, false, 20, ct));
+    (q, ct) => esSvc.SearchAsync(new ProductSearchRequest { Q = q, Size = 20 }, ct));
 
 // ---- Report ----------------------------------------------------------------
 Console.WriteLine("\n\n## Full-text search: `LIKE '%term%'` vs Elasticsearch\n");

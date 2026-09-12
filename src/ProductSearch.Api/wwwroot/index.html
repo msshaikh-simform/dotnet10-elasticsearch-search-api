@@ -50,11 +50,21 @@
   .chip.on{background:var(--teal);color:#fff}
   .note{margin-top:20px;font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:13px;line-height:1.55}
   .hint{display:inline-block;background:var(--lav);color:var(--purple);border-radius:6px;padding:2px 8px;font-size:12.5px;margin-right:6px;cursor:pointer}
+  .banner{border-radius:10px;padding:14px 16px;margin-bottom:18px;font-size:14px;line-height:1.55}
+  .banner.bad{background:#FDECEE;border:1.6px solid #F5B9C2;color:#8C2233}
+  .banner.warn{background:#FFF6E6;border:1.6px solid #F2D9A0;color:#7A5410}
+  .banner b{display:block;margin-bottom:5px;font-size:14.5px}
+  .banner code{display:block;background:rgba(0,0,0,.06);border-radius:6px;padding:7px 10px;margin-top:7px;
+    font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;white-space:pre-wrap;word-break:break-all}
+  .err{padding:14px 0;color:var(--coral);font-size:13.5px;line-height:1.5}
+  .err b{display:block;margin-bottom:4px}
 </style>
 </head>
 <body>
   <h1>SQL Server vs Elasticsearch</h1>
   <div class="sub">The same search, the same 200,000 products, side by side. Timings are measured by the API on every request.</div>
+
+  <div id="banner"></div>
 
   <div id="suggest">
     <div class="controls">
@@ -102,8 +112,50 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const money = n => '$' + Number(n).toFixed(2);
 
+let dataReady = true;   // set by the health check; changes what "no results" means
+
+// Ask the API what is actually working, and say so plainly. The silent failure
+// this prevents: everything healthy, nothing seeded, every search returns zero.
+async function checkHealth() {
+  try {
+    const res = await fetch('/api/health');
+    const h = await res.json();
+    dataReady = h.seeded;
+    if (h.ok) { $('banner').innerHTML = ''; return; }
+
+    const broken = h.dependencies.filter(d => !d.ok);
+    const unseededOnly = !h.seeded && broken.every(d => d.name === 'Product index');
+    $('banner').innerHTML = `<div class="banner ${unseededOnly ? 'warn' : 'bad'}">
+      <b>${unseededOnly ? 'No data indexed yet' : 'Some dependencies are not available'}</b>
+      ${broken.map(d => `${esc(d.name)}: ${esc(d.detail)}${d.hint ? `<code>${esc(d.hint)}</code>` : ''}`).join('<br>')}
+    </div>`;
+  } catch {
+    $('banner').innerHTML = `<div class="banner bad"><b>The API is not responding</b>
+      Is it running?<code>dotnet run --project src/ProductSearch.Api -c Release</code></div>`;
+  }
+}
+
+// Turn a ProblemDetails response into something a developer can act on.
+function problem(p) {
+  return `<div class="err"><b>${esc(p.title || 'Request failed')}</b>${esc(p.detail || '')}</div>`;
+}
+
+async function call(url) {
+  const res = await fetch(url);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const errs = body?.errors ? Object.values(body.errors).flat().join(' ') : '';
+    throw { title: body?.title || `HTTP ${res.status}`, detail: errs || body?.detail || '' };
+  }
+  return body;
+}
+
 function rows(items) {
-  if (!items.length) return '<div class="empty">No results</div>';
+  if (!items.length) {
+    return dataReady
+      ? '<div class="empty">No results for this query</div>'
+      : '<div class="empty">No results &mdash; nothing has been indexed yet</div>';
+  }
   return items.map(p => `<div class="row">
       <div class="nm">${esc(p.name)}</div>
       <div class="meta">${esc(p.brand)} &middot; ${esc(p.sku)} &middot; ${money(p.price)}</div>
@@ -125,12 +177,12 @@ async function search() {
   $('sqlMs').textContent = $('esMs').textContent = '…';
 
   const price = $('maxPrice').value;
-  const esUrl = `/api/search/elastic?q=${encodeURIComponent(q)}&fuzzy=${$('fuzzy').checked}`
+  const esUrl = `/api/search?q=${encodeURIComponent(q)}&fuzzy=${$('fuzzy').checked}`
     + (price ? `&maxPrice=${price}` : '') + (brandFilter ? `&brand=${encodeURIComponent(brandFilter)}` : '');
 
   // Fired together so the difference is visible in real time.
-  const esP = fetch(esUrl).then(r => r.json());
-  const sqlP = fetch(`/api/search/sql?q=${encodeURIComponent(q)}`).then(r => r.json());
+  const esP = call(esUrl);
+  const sqlP = call(`/api/search/sql?q=${encodeURIComponent(q)}`);
 
   esP.then(d => {
     $('esMs').textContent = d.elapsedMs + ' ms';
@@ -141,12 +193,19 @@ async function search() {
       brandFilter = brandFilter === c.dataset.brand ? null : c.dataset.brand;
       search();
     });
+  }).catch(e => {
+    $('esMs').textContent = $('esTook').textContent = $('esCount').textContent = '—';
+    $('esBody').innerHTML = problem(e);
+    checkHealth();
   });
 
   sqlP.then(d => {
     $('sqlMs').textContent = d.elapsedMs + ' ms';
     $('sqlCount').textContent = d.count;
     $('sqlBody').innerHTML = rows(d.items);
+  }).catch(e => {
+    $('sqlMs').textContent = $('sqlCount').textContent = '—';
+    $('sqlBody').innerHTML = problem(e);
   });
 
   await Promise.allSettled([esP, sqlP]);
@@ -159,8 +218,8 @@ $('q').addEventListener('input', () => {
   const v = $('q').value.trim();
   if (v.length < 2) { $('sg').innerHTML = ''; return; }
   sgTimer = setTimeout(async () => {
-    const d = await fetch(`/api/suggest?q=${encodeURIComponent(v)}`).then(r => r.json());
-    $('sg').innerHTML = d.items?.length
+    const d = await call(`/api/suggest?q=${encodeURIComponent(v)}`).catch(() => null);
+    $("sg").innerHTML = d?.items?.length
       ? `<div class="sg">${d.items.map(i => `<div data-n="${esc(i.name)}">${esc(i.name)}</div>`).join('')}</div>`
       : '';
     document.querySelectorAll('.sg div').forEach(el => el.onclick = () => {
@@ -168,6 +227,10 @@ $('q').addEventListener('input', () => {
     });
   }, 120);
 });
+
+// Tell the developer up front if anything is missing, before they search and
+// wonder why everything returns nothing.
+checkHealth();
 
 // Deep-linkable: /?q=wireless+headphones&fuzzy=1 runs the search on load.
 (function fromUrl() {

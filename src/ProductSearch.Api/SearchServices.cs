@@ -3,8 +3,17 @@ using Elastic.Clients.Elasticsearch;
 using Elastic.Clients.Elasticsearch.Core.Search;
 using Elastic.Clients.Elasticsearch.QueryDsl;
 using Microsoft.Data.SqlClient;
+using SourceFilter = Elastic.Clients.Elasticsearch.Core.Search.SourceFilter;
 
 namespace ProductSearch.Api;
+
+/// <summary>Raised when a request asks for a page beyond Elasticsearch's result window.</summary>
+public sealed class SearchWindowExceededException(int requested, int limit)
+    : Exception($"Requested result offset {requested} exceeds the index result window of {limit}.")
+{
+    public int Requested { get; } = requested;
+    public int Limit { get; } = limit;
+}
 
 /// <summary>
 /// The baseline every team starts with: LIKE '%term%' against SQL Server.
@@ -13,7 +22,7 @@ namespace ProductSearch.Api;
 /// </summary>
 public sealed class SqlSearchService(string connectionString, int commandTimeoutSeconds = 30)
 {
-    public async Task<SearchResults> SearchAsync(string term, int size, CancellationToken ct)
+    public async Task<SearchResults> SearchAsync(string term, int size, int page, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
         var items = new List<ProductHit>();
@@ -27,16 +36,18 @@ public sealed class SqlSearchService(string connectionString, int commandTimeout
             $"(Name LIKE @p{i} OR Description LIKE @p{i})"));
 
         var sql = $"""
-            SELECT TOP (@size) Id, Sku, Name, Brand, Price
+            SELECT Id, Sku, Name, Brand, Price
             FROM Products
             WHERE {predicates}
-            ORDER BY Name;
+            ORDER BY Name
+            OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;
             """;
 
         await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct);
         await using var cmd = new SqlCommand(sql, conn) { CommandTimeout = commandTimeoutSeconds };
-        cmd.Parameters.AddWithValue("@size", size);
+        cmd.Parameters.AddWithValue("@skip", (page - 1) * size);
+        cmd.Parameters.AddWithValue("@take", size + 1); // one extra row reveals whether another page exists
         for (var i = 0; i < terms.Length; i++)
             cmd.Parameters.AddWithValue($"@p{i}", $"%{terms[i]}%");
 
@@ -47,7 +58,12 @@ public sealed class SqlSearchService(string connectionString, int commandTimeout
                 reader.GetString(3), reader.GetDecimal(4)));
 
         sw.Stop();
-        return new SearchResults("sql", term, items.Count, sw.ElapsedMilliseconds, null, items);
+
+        var hasMore = items.Count > size;
+        if (hasMore) items.RemoveAt(items.Count - 1);
+
+        return new SearchResults("sql", term, items.Count, page, size, hasMore,
+            sw.ElapsedMilliseconds, null, items);
     }
 
     /// <summary>The case SQL Server wins: an exact indexed lookup.</summary>
@@ -69,47 +85,58 @@ public sealed class SqlSearchService(string connectionString, int commandTimeout
                 reader.GetString(3), reader.GetDecimal(4)));
 
         sw.Stop();
-        return new SearchResults("sql", sku, items.Count, sw.ElapsedMilliseconds, null, items);
+        return new SearchResults("sql", sku, items.Count, 1, items.Count, false,
+            sw.ElapsedMilliseconds, null, items);
     }
 }
 
 /// <summary>The same feature built on Elasticsearch.</summary>
 public sealed class ElasticSearchService(ElasticsearchClient client)
 {
-    public async Task<SearchResults> SearchAsync(
-        string term, string? brand, decimal? maxPrice, bool fuzzy, int size, CancellationToken ct)
+    /// <summary>Elasticsearch refuses from+size beyond this by default (index.max_result_window).</summary>
+    public const int MaxResultWindow = 10_000;
+
+    private static SourceConfig CardFields => new(new SourceFilter
     {
+        Includes = Fields.FromExpressions<ProductDocument>(
+            [f => f.Id, f => f.Sku, f => f.Name, f => f.Brand, f => f.Price])
+    });
+
+    public async Task<SearchResults> SearchAsync(ProductSearchRequest request, CancellationToken ct)
+    {
+        var from = (request.PageNumber - 1) * request.PageSize;
+
+        // Fail with an explanation rather than letting Elasticsearch return a
+        // confusing error. Deep paging needs search_after, not bigger windows.
+        if (from + request.PageSize > MaxResultWindow)
+            throw new SearchWindowExceededException(from + request.PageSize, MaxResultWindow);
+
         var sw = Stopwatch.StartNew();
 
         // Yes/no conditions go in filter context: no scoring, and eligible for caching.
         var filters = new List<Query>();
-        if (!string.IsNullOrWhiteSpace(brand))
-            filters.Add(new TermQuery { Field = Infer.Field<ProductDocument>(f => f.Brand), Value = brand });
-        if (maxPrice is not null)
+        if (!string.IsNullOrWhiteSpace(request.Brand))
+            filters.Add(new TermQuery { Field = Infer.Field<ProductDocument>(f => f.Brand), Value = request.Brand });
+        if (request.MaxPrice is not null)
             filters.Add(new NumberRangeQuery
             {
                 Field = Infer.Field<ProductDocument>(f => f.Price),
-                Lte = (double)maxPrice
+                Lte = (double)request.MaxPrice
             });
 
         var response = await client.SearchAsync<ProductDocument>(s => s
             .Indices(ProductIndex.Alias)
-            .Size(size)
+            .From(from)
+            .Size(request.PageSize + 1) // one extra hit reveals whether another page exists
             // The UI shows "20 results", not "20 of 41,382" - so don't pay for an exact count.
             .TrackTotalHits(new TrackHits(false))
-            // Return only the fields the result card renders.
-            .Source(new SourceConfig(new Elastic.Clients.Elasticsearch.Core.Search.SourceFilter
-            {
-                Includes = Fields.FromExpressions<ProductDocument>(
-                    [f => f.Id, f => f.Sku, f => f.Name, f => f.Brand, f => f.Price])
-            }))
+            .Source(CardFields)
             .Query(q => q.Bool(b => b
                 .Must(mu => mu.MultiMatch(mm =>
                 {
-                    mm.Query(term).Fields(new[] { "name^3", "brand^2", "description" });
-                    // Fuzziness is opt-in: it costs more and it must never be
-                    // applied to identifiers like Sku.
-                    if (fuzzy) mm.Fuzziness(new Fuzziness("AUTO"));
+                    mm.Query(request.Term).Fields(new[] { "name^3", "brand^2", "description" });
+                    // Fuzziness is opt-in: it costs more and must never touch identifiers like Sku.
+                    if (request.UseFuzzy) mm.Fuzziness(new Fuzziness("AUTO"));
                 }))
                 .Filter(filters)))
             .Aggregations(a => a
@@ -118,17 +145,14 @@ public sealed class ElasticSearchService(ElasticsearchClient client)
             ct);
 
         sw.Stop();
+        EnsureValid(response);
 
-        if (!response.IsValidResponse)
-            throw new InvalidOperationException(
-                response.ElasticsearchServerError?.Error?.Reason ?? "Elasticsearch query failed");
+        var items = response.Documents.Select(ToHit).ToList();
+        var hasMore = items.Count > request.PageSize;
+        if (hasMore) items.RemoveAt(items.Count - 1);
 
-        var items = response.Documents
-            .Select(d => new ProductHit(d.Id, d.Sku, d.Name, d.Brand, (decimal)d.Price))
-            .ToList();
-
-        return new SearchResults("elasticsearch", term, items.Count,
-            sw.ElapsedMilliseconds, response.Took, items, ReadFacets(response, "by_brand"));
+        return new SearchResults("elasticsearch", request.Term, items.Count, request.PageNumber, request.PageSize,
+            hasMore, sw.ElapsedMilliseconds, response.Took, items, ReadFacets(response, "by_brand"));
     }
 
     /// <summary>Autocomplete. SQL Server has no comparable answer at this speed.</summary>
@@ -140,11 +164,7 @@ public sealed class ElasticSearchService(ElasticsearchClient client)
             .Indices(ProductIndex.Alias)
             .Size(8)
             .TrackTotalHits(new TrackHits(false))
-            .Source(new SourceConfig(new Elastic.Clients.Elasticsearch.Core.Search.SourceFilter
-            {
-                Includes = Fields.FromExpressions<ProductDocument>(
-                    [f => f.Id, f => f.Sku, f => f.Name, f => f.Brand, f => f.Price])
-            }))
+            .Source(CardFields)
             .Query(q => q.MultiMatch(mm => mm
                 .Query(prefix)
                 .Type(TextQueryType.BoolPrefix)
@@ -152,13 +172,40 @@ public sealed class ElasticSearchService(ElasticsearchClient client)
             ct);
 
         sw.Stop();
+        EnsureValid(response);
 
-        var items = response.Documents
-            .Select(d => new ProductHit(d.Id, d.Sku, d.Name, d.Brand, (decimal)d.Price))
-            .ToList();
-
-        return new SearchResults("elasticsearch", prefix, items.Count,
+        var items = response.Documents.Select(ToHit).ToList();
+        return new SearchResults("elasticsearch", prefix, items.Count, 1, 8, false,
             sw.ElapsedMilliseconds, response.Took, items);
+    }
+
+    /// <summary>Fetch a single product by id - the detail view behind every search result.</summary>
+    public async Task<ProductHit?> GetByIdAsync(int id, CancellationToken ct)
+    {
+        var response = await client.GetAsync<ProductDocument>(id.ToString(),
+            g => g.Index(ProductIndex.Alias).SourceIncludes(
+                Fields.FromExpressions<ProductDocument>(
+                    [f => f.Id, f => f.Sku, f => f.Name, f => f.Brand, f => f.Price])), ct);
+
+        return response is { IsValidResponse: true, Found: true, Source: not null }
+            ? ToHit(response.Source)
+            : null;
+    }
+
+    private static ProductHit ToHit(ProductDocument d) =>
+        new(d.Id, d.Sku, d.Name, d.Brand, (decimal)d.Price);
+
+    private static void EnsureValid<T>(SearchResponse<T> response)
+    {
+        if (response.IsValidResponse) return;
+
+        var reason = response.ElasticsearchServerError?.Error?.Reason ?? "Elasticsearch query failed";
+        if (reason.Contains("index_not_found", StringComparison.OrdinalIgnoreCase) ||
+            reason.Contains("no such index", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"The '{ProductIndex.Alias}' index does not exist. Run the seeder first.");
+
+        throw new InvalidOperationException(reason);
     }
 
     private static Dictionary<string, long> ReadFacets(SearchResponse<ProductDocument> response, string name)

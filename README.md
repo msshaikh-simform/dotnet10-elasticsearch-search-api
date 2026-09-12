@@ -10,7 +10,7 @@ Every response carries its own timing, so the difference is visible in the paylo
 The same query, hitting each engine:
 
 ```jsonc
-// GET /api/search/elastic?q=wireless headphones&size=2
+// GET /api/search?q=wireless headphones&size=2
 {
   "engine": "elasticsearch",
   "query": "wireless headphones",
@@ -56,7 +56,7 @@ gets read. That cost grows with your table. An inverted index does not work that
 
 | Feature | Where |
 | --- | --- |
-| Inverted index + full-text search | `/api/search/elastic` |
+| Inverted index + full-text search | `/api/search` |
 | Analyzers: stemming, ASCII folding, synonyms | `ProductIndex.cs` |
 | Multi-fields (one value, several jobs) | `name`, `name.keyword`, `name.suggest` |
 | Relevance scoring (BM25) + field boosts | `name^3, brand^2, description` |
@@ -66,6 +66,26 @@ gets read. That cost grows with your table. An inverted index does not work that
 | Autocomplete (`search_as_you_type`) | `/api/suggest` |
 | Bulk indexing with per-item error checks | `ProductSearch.Seeder` |
 | Index alias for zero-downtime reindexing | `products` → `products-v1` |
+
+### What .NET 10 brings to this
+
+The API is not just *hosted* on .NET 10 — it uses features that only exist there:
+
+| Feature | Where you see it |
+| --- | --- |
+| **Minimal API validation** | `ProductSearchRequest` carries `[Required]`, `[Range]`, `[StringLength]`. An invalid request never reaches the handler — `?size=999` comes back as a 400 naming the field. |
+| **OpenAPI 3.1** (3.0 previously) | `GET /openapi/v1.json` reports `"openapi": "3.1.1"` |
+| **XML comments in OpenAPI** | Endpoint summaries in the document come from `///` comments in the source |
+| **`Microsoft.Extensions.Validation`** | Validation moved out of ASP.NET-only territory; it ships in the shared framework, so no package reference is needed |
+
+```jsonc
+// GET /api/search?q=wireless&size=999
+{
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": { "Size": ["size must be between 1 and 100"] }
+}
+```
 
 ### Not covered here
 
@@ -178,11 +198,13 @@ of them rather than matching one contiguous phrase. It is as fast as that approa
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/search/sql?q=` | SQL Server baseline |
-| `GET /api/search/elastic?q=&brand=&maxPrice=&fuzzy=` | Elasticsearch + filters + facets |
-| `GET /api/suggest?q=` | Autocomplete |
-| `GET /api/lookup/sql?sku=` | Exact lookup — SQL wins |
-| `GET /api/health` | Cluster ping |
+| `GET /api/search?q=&brand=&maxPrice=&fuzzy=&page=&size=` | **Primary.** Elasticsearch with filters, facets and paging |
+| `GET /api/search/sql?q=&page=&size=` | SQL Server `LIKE` baseline, for comparison only |
+| `GET /api/suggest?q=` | Autocomplete (`search_as_you_type`) |
+| `GET /api/products/{id}` | Product detail |
+| `GET /api/lookup/sql?sku=` | Exact indexed lookup -- the case SQL Server wins |
+| `GET /api/health` | Per-dependency status, and whether data is seeded |
+| `GET /openapi/v1.json` | OpenAPI 3.1 document |
 
 Deep links work: `http://localhost:5080/?q=wireless+headphones&fuzzy=1`
 
@@ -239,6 +261,52 @@ dotnet run --project src/ProductSearch.Seeder -c Release -- 50000
 docker compose down          # stop containers, keep data
 docker compose down -v       # stop and delete all data (start completely fresh)
 ```
+
+## When something goes wrong
+
+The most confusing failure in a project like this is the silent one: everything is running, nothing is seeded,
+and every search returns zero with no explanation. So the POC checks its own dependencies and tells you.
+
+**At startup**, before the first request:
+
+```
+  Startup check
+  ─────────────────────────────────────────────────────────────
+   [ OK ]  Elasticsearch    reachable at http://localhost:9200
+   [FAIL]  Product index    index/alias 'products' does not exist
+           -> Run the seeder: dotnet run --project src/ProductSearch.Seeder -c Release -- 200000
+   [ OK ]  SQL Server       reachable, Products table present
+  ─────────────────────────────────────────────────────────────
+  The API will start, but searches return nothing until you seed.
+```
+
+**In the API**, every failure is a `ProblemDetails` response with a fix, not a stack trace:
+
+```jsonc
+{
+  "title": "Search index missing",
+  "status": 503,
+  "detail": "The 'products' index does not exist. Run the seeder first. Run: dotnet run --project ..."
+}
+```
+
+**In the browser**, the page checks `/api/health` on load and shows what to run:
+
+![Missing data warning](docs/screenshots/03-unseeded-warning.png)
+
+It also distinguishes *"no results for this query"* from *"nothing has been indexed yet"* — identical-looking
+states that mean completely different things.
+
+| Situation | Status | What you are told |
+| --- | --- | --- |
+| No `q` supplied | 400 | Which field is missing, and an example |
+| `size=999` | 400 | `size must be between 1 and 100` |
+| Page beyond 10,000 results | 400 | The `max_result_window` limit, and that deep paging needs `search_after` |
+| Index missing / not seeded | 503 | The exact seeder command |
+| Elasticsearch not started | 503 | That it needs ~60s, and `docker compose up -d` |
+| SQL Server not ready | 503 | That it starts more slowly than Elasticsearch |
+| SQL timeout under load | 504 | That this is the expected finding, not a defect |
+| Unknown product id | 404 | The valid id range |
 
 ## Troubleshooting
 

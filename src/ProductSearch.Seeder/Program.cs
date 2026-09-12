@@ -8,6 +8,8 @@ using Microsoft.Data.SqlClient;
 // Seeds SQL Server (the source of truth) and then bulk-indexes into Elasticsearch.
 // Both engines end up with byte-identical data, which is what makes the comparison fair.
 
+System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+
 var count = args.Length > 0 && int.TryParse(args[0], out var n) ? n : 200_000;
 
 var masterConn  = ProductSearch.Api.Env.SqlMasterConnectionString;
