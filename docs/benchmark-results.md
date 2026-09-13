@@ -54,13 +54,13 @@ Speed is only half the gap. On identical data:
 
 | Query | SQL Server | Elasticsearch |
 | --- | --- | --- |
-| `wireless` | 3 results, 1,453 ms | 3 results, 17 ms |
-| `wireless headphone` | 3 results, 1,920 ms | 3 results, 14 ms |
-| `wireless headphones` | **0 results**, 2,036 ms | 3 results, 13 ms |
-| `gaming laptop` | 3 results, 1,962 ms | 3 results, 63 ms |
+| `wireless headphone` | 20 results, ~2,800 ms | 20 results, ~19 ms |
+| `wireless headphones` | **0 results**, ~1,300 ms | 20 results, ~30 ms |
+| `wirless headphone` (typo) | **0 results** | 20 results |
+| `notebook` (synonym) | **0 results** | 20 results |
 
-The third row is the one to sit with. Product names contain "Headphone"; a user typing the plural gets
-**nothing at all** from `LIKE`, after a two-second wait. Elasticsearch stems both sides to `headphon` and
+The second row is the one to sit with. Product names contain "Headphone"; a user typing the plural gets
+**nothing at all** from `LIKE`, after more than a second of scanning. Elasticsearch stems both sides to `headphon` and
 matches. No amount of tuning fixes that — `LIKE` has no concept of word forms.
 
 The same applies to typo tolerance: `wirless headphone` returns **0 rows** in SQL and 20 in Elasticsearch. (A
@@ -71,7 +71,9 @@ request, where SQL Server would need a separate `GROUP BY` scan per filter.
 
 ## Reproducing
 
-```bash
+Stop the API first (Ctrl+C) so it does not compete for CPU, then:
+
+```powershell
 docker compose up -d
 dotnet run --project src/ProductSearch.Seeder    -c Release -- 200000
 dotnet run --project src/ProductSearch.Benchmark -c Release -- --requests 40
