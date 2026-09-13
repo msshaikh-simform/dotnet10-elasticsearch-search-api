@@ -146,8 +146,8 @@ A response containing `"status":"green"` or `"status":"yellow"` means you're rea
 | Step | You should see |
 | --- | --- |
 | `docker compose up -d` | 2 containers: `ps-elasticsearch`, `ps-sqlserver` |
-| Seeder | `SQL Server loaded in 4,000-9,000 ms`, `Elasticsearch indexed in 26,000-42,000 ms (0 failures)` |
-| Index check | `products-v1` — 200,000 docs, ~100 MB |
+| Seeder | `SQL Server loaded in 4,000-12,000 ms`, `Elasticsearch indexed in 26,000-42,000 ms (0 failures)` |
+| Index check | `products-v1` — 200,000 docs, ~100-106 MB |
 | API | Listening on `http://localhost:5080` |
 
 ---
