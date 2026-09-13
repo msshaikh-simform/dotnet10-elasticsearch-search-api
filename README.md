@@ -105,7 +105,7 @@ from the single question this POC exists to answer: how far does `LIKE` get you,
 ## Quick start
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/msshaikh-simform/dotnet10-elasticsearch-search-api.git
 cd dotnet10-elasticsearch-search-api
 
 docker compose up -d                                                # 1. Elasticsearch 9.5.3 + SQL Server 2022
