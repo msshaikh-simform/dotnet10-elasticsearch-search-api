@@ -343,7 +343,7 @@ Takes about 5 minutes and will fully load your CPU. Results below.
 **Throughput matters more than latency here.** SQL Server is stuck at 0.5-0.6 req/s at *every* concurrency
 level - extra users just queue. Elasticsearch scales from 41 to 153 req/s.
 
-One `LIKE` query over this catalog burns **12–13 seconds of CPU** to return 20 rows, because the work is
+One `LIKE` query over this catalog burns **8.5 seconds of CPU** to return 20 rows, because the work is
 proportional to rows stored. At 20 users its p99 is 45 seconds: a timeout in any real application.
 
 ### Where SQL Server wins
