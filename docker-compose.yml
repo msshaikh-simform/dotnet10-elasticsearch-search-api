@@ -9,6 +9,8 @@ services:
       # Plain HTTP for local development only. Keep TLS enabled in production.
       - xpack.security.http.ssl.enabled=false
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
     ports:
       - "9200:9200"
     healthcheck:
@@ -24,5 +26,11 @@ services:
       - ACCEPT_EULA=Y
       - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD:-Str0ng!Passw0rd}
       - MSSQL_PID=Developer
+    volumes:
+      - sqldata:/var/opt/mssql
     ports:
       - "1433:1433"
+
+volumes:
+  esdata:
+  sqldata:
