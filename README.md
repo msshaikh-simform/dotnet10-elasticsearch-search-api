@@ -15,13 +15,14 @@ The same query, hitting each engine:
   "engine": "elasticsearch",
   "query": "wireless headphones",
   "count": 2,
-  "elapsedMs": 48,          // measured by the API (includes network + deserialization)
-  "tookMs": 33,             // reported by the cluster itself
+  "page": 1, "size": 2, "hasMore": true,
+  "elapsedMs": 32,          // measured by the API (includes network + deserialization)
+  "tookMs": 19,             // reported by the cluster itself
   "items": [
-    { "id": 135055, "sku": "SKU-0135055", "name": "Philips Bluetooth Wireless Headphone 312",
-      "brand": "Philips", "price": 449.17 },
-    { "id": 135056, "sku": "SKU-0135056", "name": "Lenovo Ultra Wireless Headphone 274",
-      "brand": "Lenovo",  "price": 1314.33 }
+    { "id": 15030, "sku": "SKU-0015030", "name": "Philips Portable Wireless Headphone 327",
+      "brand": "Philips", "price": 781.89 },
+    { "id": 15069, "sku": "SKU-0015069", "name": "Dell Wireless Ultra Headphone 541",
+      "brand": "Dell",    "price": 475.65 }
   ],
   "facets": { "Dell": 6965, "Logitech": 6955, "Xiaomi": 6927 }   // same request, no extra queries
 }
@@ -33,7 +34,7 @@ The same query, hitting each engine:
   "engine": "sql",
   "query": "wireless headphones",
   "count": 0,               // no match: names contain "Headphone", LIKE cannot stem
-  "elapsedMs": 1230,        // and it still scanned all 200,000 rows to find nothing
+  "elapsedMs": 1328,        // and it still scanned all 200,000 rows to find nothing
   "items": [],
   "facets": null            // facet counts would need a separate GROUP BY scan per filter
 }
@@ -108,7 +109,7 @@ git clone <repo-url>
 cd dotnet10-elasticsearch-search-api
 
 docker compose up -d                                                # 1. Elasticsearch 9.5.3 + SQL Server 2022
-dotnet run --project src/ProductSearch.Seeder -c Release -- 200000   # 2. seed + index  (~35s)
+dotnet run --project src/ProductSearch.Seeder -c Release -- 200000   # 2. seed + index (35-80s)
 dotnet run --project src/ProductSearch.Api    -c Release             # 3. API + demo UI
 ```
 
@@ -131,8 +132,8 @@ curl -u elastic:changeme http://localhost:9200/_cluster/health
 | Step | You should see |
 | --- | --- |
 | `docker compose up -d` | 2 containers: `ps-elasticsearch`, `ps-sqlserver` |
-| Seeder | `SQL Server loaded in ~4,000 ms`, `Elasticsearch indexed in ~26,000 ms (0 failures)` |
-| Index check | `products-v1` — 200,000 docs, ~105 MB |
+| Seeder | `SQL Server loaded in 4,000-9,000 ms`, `Elasticsearch indexed in 26,000-42,000 ms (0 failures)` |
+| Index check | `products-v1` — 200,000 docs, ~100 MB |
 | API | Listening on `http://localhost:5080` |
 
 ---
@@ -141,13 +142,18 @@ curl -u elastic:changeme http://localhost:9200/_cluster/health
 
 | # | Do this | What happens |
 | --- | --- | --- |
-| 1 | Search **`wireless headphones`** | SQL: **0 results in ~4,900 ms**. Elasticsearch: 20 results in ~40 ms. Names contain "Headphone" singular — the stemmer matches, `LIKE` cannot. |
+| 1 | Search **`wireless headphones`** | SQL: **0 results**, 1,300–4,900 ms. Elasticsearch: **20 results**, 20–200 ms. Names contain "Headphone" singular — the stemmer matches, `LIKE` cannot. |
 | 2 | Tick **typo tolerance**, search **`wireles headphone`** | Elasticsearch still finds them. SQL returns nothing. |
 | 3 | Click a **brand facet** | Counts came back in the *same* request. SQL needs a separate `GROUP BY` scan per filter. |
 | 4 | Type in the box | Autocomplete fires per keystroke and returns in single-digit ms. |
 
 The panels show **elapsed** (measured by the API, includes network + deserialization) and **cluster took**
 (what Elasticsearch reported). The gap between them is your own stack.
+
+> **The demo page is unfair to Elasticsearch, deliberately.** It fires both queries at the same moment, so the
+> SQL Server scan saturates every core while Elasticsearch is trying to answer. That inflates the Elasticsearch
+> figure — on this machine, 20–40 ms alone becomes 150–380 ms under that contention. The benchmark below runs
+> each engine separately, which is why its numbers are lower and more representative.
 
 ---
 
