@@ -205,7 +205,7 @@ static async Task<bool> PreflightAsync(string sqlConnection, ElasticsearchClient
     {
         problems.Add($"Cannot reach Elasticsearch at {esUrl}: {ex.Message.Split('\n')[0]}\n"
                    + "    Start it with: docker compose up -d\n"
-                   + "    Check readiness with: curl -u elastic:changeme http://localhost:9200/_cluster/health");
+                   + "    Check readiness with: curl.exe -u elastic:changeme http://localhost:9200/_cluster/health");
     }
 
     if (problems.Count == 0) return true;
