@@ -3,7 +3,7 @@
 A runnable proof of concept that puts **SQL Server `LIKE '%term%'` and Elasticsearch side by side** over the
 same 200,000-product catalog — same data, same machine, same queries — and measures the difference.
 
-> **Headline:** at 20 concurrent users, SQL Server p50 is **75,747 ms**. Elasticsearch is **91 ms**.
+> **Headline:** at 20 concurrent users, SQL Server p50 is **41,572 ms**. Elasticsearch is **76 ms**.
 > Full method and numbers: [docs/benchmark-results.md](docs/benchmark-results.md)
 
 Every response carries its own timing, so the difference is visible in the payload itself — no profiler needed.
@@ -40,7 +40,7 @@ The same query, hitting each engine:
 }
 ```
 
-![Side by side](docs/screenshots/01-side-by-side.png)
+![SQL Server vs Elasticsearch, side by side](docs/screenshots/01-speed.png)
 
 ---
 
@@ -102,9 +102,12 @@ from the single question this POC exists to answer: how far does `LIKE` get you,
 - **Docker Desktop**, at least **5 GB** allocated (Settings → Resources)
 - ~3 GB disk for images, ~500 MB for data
 
+Commands below are shown for **PowerShell**, the Windows default. They work unchanged in bash except where
+noted (`curl.exe` becomes `curl`).
+
 ## Quick start
 
-```bash
+```powershell
 git clone https://github.com/msshaikh-simform/dotnet10-elasticsearch-search-api.git
 cd dotnet10-elasticsearch-search-api
 
@@ -152,24 +155,177 @@ A response containing `"status":"green"` or `"status":"yellow"` means you're rea
 
 ---
 
-## Try these four things
+## The test cases
 
-| # | Do this | What happens |
-| --- | --- | --- |
-| 1 | Search **`wireless headphones`** | SQL: **0 results**, 1,300–4,900 ms. Elasticsearch: **20 results**, 20–200 ms. Names contain "Headphone" singular — the stemmer matches, `LIKE` cannot. |
-| 2 | Tick **typo tolerance**, search **`wireles headphone`** | Elasticsearch still finds them. SQL returns nothing. |
-| 3 | Click a **brand facet** | Counts came back in the *same* request. SQL needs a separate `GROUP BY` scan per filter. |
-| 4 | Type in the box | Autocomplete fires per keystroke and returns in single-digit ms. |
+Open **<http://localhost:5080>**. Each numbered chip under the search box runs one case.
 
-The panels show **elapsed** (measured by the API, includes network + deserialization) and **cluster took**
-(what Elasticsearch reported). The gap between them is your own stack.
+**Where to look:** the big number under **`elapsed`** on each panel — purple is SQL Server, teal is
+Elasticsearch — and the **`results`** count beside it. Elasticsearch also reports **`cluster took`**, which is
+its own measurement excluding network and deserialization.
 
-> **The demo page is unfair to Elasticsearch, deliberately.** It fires both queries at the same moment, so the
-> SQL Server scan saturates every core while Elasticsearch is trying to answer. That inflates the Elasticsearch
-> figure — on this machine, 20–40 ms alone becomes 150–380 ms under that contention. The benchmark below runs
-> each engine separately, which is why its numbers are lower and more representative.
+> **Read this before judging the numbers.** The page fires both queries *simultaneously*, so the SQL scan
+> saturates every core while Elasticsearch is answering. That inflates Elasticsearch's `elapsed` — compare
+> `cluster took` for its real cost, or run the benchmark below, which tests each engine separately.
 
 ---
+
+### Case 1 — Speed, with nothing else different
+
+**Click `1. speed`** (searches `wireless headphone`)
+
+![Speed comparison](docs/screenshots/01-speed.png)
+
+| | SQL Server | Elasticsearch |
+| --- | --- | --- |
+| Results | 20 | 20 |
+| Time | ~1,000–2,800 ms | ~15–40 ms (`cluster took` ~19 ms) |
+
+**Both engines return 20 results.** Nothing is different except how they found them, which makes this the
+clean speed comparison — nobody can dismiss it as "you compared a working query to a failing one."
+
+**Why SQL is slow.** `LIKE '%wireless%'` has a leading wildcard, so no index can be used — the engine has no
+way to know where inside the text a match begins. Measured with `SET STATISTICS IO`:
+
+```
+Table 'Products'. Scan count 9, logical reads 19116
+CPU time = 8499 ms,  elapsed time = 1205 ms
+```
+
+**19,116 pages ≈ 149 MB read — the entire table — and 8.5 seconds of CPU, to return 20 rows.**
+
+**Why Elasticsearch is fast.** The terms were computed once, at index time. The query is two posting-list
+lookups and an intersection:
+
+```
+name:wireless   ->  9.65 ms
+name:headphon   -> 39.81 ms
+description:*   ->  0.20 ms
+```
+
+It never reads the 105 MB index — only the entries for those two terms.
+
+> **The rule:** SQL's cost is proportional to **rows stored**. Elasticsearch's is proportional to **rows
+> matched**. Here that is 200,000 versus 20.
+
+**Now look at the result lists — this is the part people miss.** SQL returns *twenty consecutive Anker
+products*, because `ORDER BY Name` is alphabetical and "Anker" sorts first. Elasticsearch returns Philips,
+Dell, Bose, Lenovo, JBL, Xiaomi — **ranked by relevance**. A real user would look at the SQL column and
+conclude the search is broken. **SQL has no concept of a "best" match.**
+
+---
+
+### Case 2 — Plurals (stemming)
+
+**Click `2. plural`** (searches `wireless headphone`**s**)
+
+![Stemming](docs/screenshots/02-stemming.png)
+
+| | SQL Server | Elasticsearch |
+| --- | --- | --- |
+| Results | **0** | 20 |
+| Time | ~1,300 ms | ~30 ms |
+
+The products are named "Headphone". You typed "headphone**s**". SQL scanned all 200,000 rows for 1.3 seconds
+and **found nothing**.
+
+Elasticsearch reduced both the stored text and your query to the same root — `headphon` — so they match. No
+amount of tuning fixes this in SQL: `LIKE` has no concept of word forms.
+
+---
+
+### Case 3 — Typos
+
+**Click `3. typo`** (searches `wirless headphone`, typo tolerance on)
+
+![Typo tolerance](docs/screenshots/03-typo.png)
+
+| | SQL Server | Elasticsearch |
+| --- | --- | --- |
+| Results | **0** | 20 |
+
+One transposed letter. SQL can't approximate; Elasticsearch matches within an edit distance scaled to word
+length.
+
+> **Why this example and not `wireles`.** An earlier version used `wireles`, and SQL returned 20 results —
+> because "wireles" is a *substring* of "Wireless", so `LIKE '%wireles%'` matched by coincidence. That proved
+> nothing. `wirless` is a genuine misspelling that is not a substring of anything in the data.
+
+Note the checkbox: fuzziness is **opt-in**, because it costs more and must never be applied to identifiers.
+One character separates `SKU-0015030` from `SKU-0015031`.
+
+---
+
+### Case 4 — Synonyms
+
+**Click `4. synonym`** (searches `notebook`)
+
+![Synonyms](docs/screenshots/04-synonym.png)
+
+| | SQL Server | Elasticsearch |
+| --- | --- | --- |
+| Results | **0** | 20 — all **Laptop** products |
+
+**The word "notebook" appears nowhere in the data.** Elasticsearch returns "Samsung Wireless Studio Laptop
+760" and friends because the analyzer expands `notebook` to `laptop` at search time.
+
+Because the expansion happens at *search* time, the synonym list can change without reindexing 200,000
+documents.
+
+> **Why this example and not `television`.** An earlier version searched `television`, but products are
+> literally *named* "Television" — both engines matched directly and the `tv, television` synonym was never
+> exercised. `notebook` has no literal match, so only the synonym can find it.
+
+---
+
+### Case 5 — Facets, free with the search
+
+**Click a brand chip** at the bottom of the Elasticsearch panel
+
+![Facets](docs/screenshots/05-facets.png)
+
+The counts — `Dell (2569)`, `Logitech (2532)` — arrived **in the same request as the results**. Clicking one
+filters instantly.
+
+SQL Server has no equivalent. Each of those eight counts would be a separate `GROUP BY` over the same
+unindexable scan: **eight more full-table scans** to render one sidebar.
+
+---
+
+### Case 6 — Autocomplete
+
+**Type `sony wire` slowly in the search box**
+
+Suggestions appear as you type, from a `search_as_you_type` field, fast enough to fire on every keystroke.
+There is no practical SQL equivalent at 200,000 rows — each keystroke would be another full scan.
+
+---
+
+### Case 7 — Where SQL Server wins
+
+Open **<http://localhost:5080/api/lookup/sql?sku=SKU-0100000>**
+
+| Engine | p50 | Throughput |
+| --- | --- | --- |
+| **SQL Server** | **1 ms** | **499 req/s** |
+| Elasticsearch | 11 ms | 90 req/s |
+
+An indexed column and an exact value: the database is **11× faster**. This case is in the POC deliberately.
+Elasticsearch is not a database replacement — it is a read model for the queries a database is bad at, and a
+comparison that only ever favours one side isn't worth trusting.
+
+---
+
+### Case 8 — Under load, which is where it actually matters
+
+Single searches take 1–3 seconds. Annoying, but survivable for one user. Real applications have many.
+
+**Stop the API first** (Ctrl+C) so it doesn't compete for CPU, then:
+
+```powershell
+dotnet run --project src/ProductSearch.Benchmark -c Release -- --requests 40
+```
+
+Takes about 5 minutes and will fully load your CPU. Results below.
 
 ## Results
 
@@ -177,32 +333,32 @@ The panels show **elapsed** (measured by the API, includes network + deserializa
 
 | Concurrency | Engine | p50 | p95 | p99 | Throughput |
 | --- | --- | --- | --- | --- | --- |
-| 1 | SQL Server | 2,527 ms | 2,798 ms | 2,946 ms | 0.4 req/s |
-| 1 | Elasticsearch | **17 ms** | 24 ms | 31 ms | **54.2 req/s** |
-| 5 | SQL Server | 16,526 ms | 25,148 ms | 25,679 ms | 0.3 req/s |
-| 5 | Elasticsearch | **30 ms** | 52 ms | 72 ms | **143.4 req/s** |
-| 20 | SQL Server | 75,747 ms | 91,613 ms | 92,212 ms | 0.3 req/s |
-| 20 | Elasticsearch | **91 ms** | 292 ms | 304 ms | **128.2 req/s** |
+| 1 | SQL Server | 1,709 ms | 2,081 ms | 2,357 ms | 0.6 req/s |
+| 1 | Elasticsearch | **18 ms** | 34 ms | 146 ms | **41.2 req/s** |
+| 5 | SQL Server | 9,194 ms | 9,756 ms | 9,937 ms | 0.6 req/s |
+| 5 | Elasticsearch | **29 ms** | 45 ms | 67 ms | **153.2 req/s** |
+| 20 | SQL Server | 41,572 ms | 43,995 ms | 44,753 ms | 0.5 req/s |
+| 20 | Elasticsearch | **76 ms** | 289 ms | 297 ms | **125.0 req/s** |
 
-**Throughput matters more than latency here.** SQL Server is stuck at 0.3–0.4 req/s at *every* concurrency
-level — extra users just queue. Elasticsearch scales from 54 to 143 req/s.
+**Throughput matters more than latency here.** SQL Server is stuck at 0.5-0.6 req/s at *every* concurrency
+level - extra users just queue. Elasticsearch scales from 41 to 153 req/s.
 
 One `LIKE` query over this catalog burns **12–13 seconds of CPU** to return 20 rows, because the work is
-proportional to rows stored. At 20 users its p99 is 92 seconds: a timeout in any real application.
+proportional to rows stored. At 20 users its p99 is 45 seconds: a timeout in any real application.
 
 ### Where SQL Server wins
 
 | Engine | p50 | Throughput |
 | --- | --- | --- |
-| **SQL Server** (exact SKU) | **2 ms** | **189.4 req/s** |
-| Elasticsearch | 11 ms | 86.4 req/s |
+| **SQL Server** (exact SKU) | **1 ms** | **499.6 req/s** |
+| Elasticsearch | 11 ms | 90.0 req/s |
 
 Indexed identifier, exact value — the database is the right tool. Elasticsearch is not a database replacement;
 it is a read model for queries a database is bad at.
 
 ### Run it yourself
 
-```bash
+```powershell
 dotnet run --project src/ProductSearch.Benchmark -c Release -- --requests 40
 ```
 
@@ -331,7 +487,7 @@ On success it tells you what to run next. Exit codes: `0` success, `1` dependenc
 
 **In the browser**, the page checks `/api/health` on load and shows what to run:
 
-![Missing data warning](docs/screenshots/03-unseeded-warning.png)
+![Missing data warning](docs/screenshots/06-unseeded-warning.png)
 
 It also distinguishes *"no results for this query"* from *"nothing has been indexed yet"* — identical-looking
 states that mean completely different things.
@@ -357,6 +513,8 @@ states that mean completely different things.
 | `Login failed for user 'sa'` | SQL Server starts slower than Elasticsearch. Wait, retry. |
 | SQL search times out | Expected above ~10 concurrent users. That is the finding, not a bug. |
 | Build fails: "file is locked by ProductSearch.Api" | Fixed in this repo - the Seeder and Benchmark reference `ProductSearch.Core`, not the API executable, so you can re-seed while the API runs. |
+| Benchmark numbers look low | Stop the API first (Ctrl+C). If it is running it competes for the same CPU the benchmark is measuring. |
+| Both engines "look fast" when clicking | A single search is 1-3 s vs 0.03 s - survivable for one user. Run case 8; under 20 concurrent users SQL passes 40 seconds. |
 | Port 5080 in use | `dotnet run --project src/ProductSearch.Api -- --urls http://localhost:5090` |
 
 ## Development-only warnings

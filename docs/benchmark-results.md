@@ -15,22 +15,22 @@ one contiguous phrase. This is what a competent developer writes before reaching
 
 | Concurrency | Engine | p50 | p95 | p99 | Throughput |
 | --- | --- | --- | --- | --- | --- |
-| 1 | SQL Server | 2,527 ms | 2,798 ms | 2,946 ms | 0.4 req/s |
-| 1 | Elasticsearch | **17 ms** | 24 ms | 31 ms | **54.2 req/s** |
-| 5 | SQL Server | 16,526 ms | 25,148 ms | 25,679 ms | 0.3 req/s |
-| 5 | Elasticsearch | **30 ms** | 52 ms | 72 ms | **143.4 req/s** |
-| 20 | SQL Server | 75,747 ms | 91,613 ms | 92,212 ms | 0.3 req/s |
-| 20 | Elasticsearch | **91 ms** | 292 ms | 304 ms | **128.2 req/s** |
+| 1 | SQL Server | 1,709 ms | 2,081 ms | 2,357 ms | 0.6 req/s |
+| 1 | Elasticsearch | **18 ms** | 34 ms | 146 ms | **41.2 req/s** |
+| 5 | SQL Server | 9,194 ms | 9,756 ms | 9,937 ms | 0.6 req/s |
+| 5 | Elasticsearch | **29 ms** | 45 ms | 67 ms | **153.2 req/s** |
+| 20 | SQL Server | 41,572 ms | 43,995 ms | 44,753 ms | 0.5 req/s |
+| 20 | Elasticsearch | **76 ms** | 289 ms | 297 ms | **125.0 req/s** |
 
-That is roughly **150× at a single user and 830× at twenty**, but the latency column is not the important one.
+That is roughly **95x at a single user and 550x at twenty**, but the latency column is not the important one.
 
-**Look at throughput.** SQL Server sits at 0.3–0.4 requests per second no matter how many users arrive — every
-extra user simply queues. Elasticsearch goes from 54 to 143 requests per second as concurrency rises. One
+**Look at throughput.** SQL Server sits at 0.5-0.6 requests per second no matter how many users arrive — every
+extra user simply queues. Elasticsearch goes from 41 to 153 requests per second as concurrency rises. One
 engine scales with load; the other has a fixed ceiling and hits it immediately.
 
-The reason is visible in `SET STATISTICS TIME`: a single one of these queries burns **12–13 seconds of CPU**
-(SQL Server parallelises the scan across every core) to return 20 rows, because the work is proportional to
-rows *stored*, not rows *matched*. At twenty concurrent users, p99 is **92 seconds** — every one of those
+The reason is visible in `SET STATISTICS IO/TIME`: a single one of these queries reads **19,116 pages, about
+149 MB - the whole table** - and burns **8,499 ms of CPU** (parallelised across 9 threads) to return 20 rows, because the work is proportional to
+rows *stored*, not rows *matched*. At twenty concurrent users, p99 is **45 seconds** — every one of those
 requests is a timeout in any real application.
 
 **On the zero failures column:** these runs used a 300-second command timeout so real latency could be
@@ -41,10 +41,10 @@ is not hypothetical — it is what the first run of this harness actually did.
 
 | Engine | p50 | p95 | Throughput |
 | --- | --- | --- | --- |
-| SQL Server | **2 ms** | 3 ms | **189.4 req/s** |
-| Elasticsearch | 11 ms | 13 ms | 86.4 req/s |
+| SQL Server | **1 ms** | 2 ms | **499.6 req/s** |
+| Elasticsearch | 11 ms | 13 ms | 90.0 req/s |
 
-Given an indexed identifier and an exact value, the relational database is the right tool and is about five
+Given an indexed identifier and an exact value, the relational database is the right tool and is about eleven
 times faster. Elasticsearch is not a replacement for your database — it is a specialised read model for the
 queries a database is bad at.
 
@@ -63,8 +63,11 @@ The third row is the one to sit with. Product names contain "Headphone"; a user 
 **nothing at all** from `LIKE`, after a two-second wait. Elasticsearch stems both sides to `headphon` and
 matches. No amount of tuning fixes that — `LIKE` has no concept of word forms.
 
-The same applies to typo tolerance (`wireles` → nothing in SQL), and to facet counts, which Elasticsearch
-returns in the same request while SQL Server needs a separate `GROUP BY` scan per filter.
+The same applies to typo tolerance: `wirless headphone` returns **0 rows** in SQL and 20 in Elasticsearch. (A
+note on choosing that example - `wireles` does *not* work as a test, because it is a substring of "Wireless"
+and `LIKE` matches it by coincidence.) Synonyms behave the same way: `notebook` appears nowhere in the data,
+so SQL returns nothing while Elasticsearch expands it to `laptop`. And facet counts come back in the same
+request, where SQL Server would need a separate `GROUP BY` scan per filter.
 
 ## Reproducing
 
