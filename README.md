@@ -123,9 +123,23 @@ Open **<http://localhost:5080>**.
 
 Elasticsearch takes ~60s to come up. Most "cannot connect" problems are just that:
 
+**PowerShell** — note `curl.exe`, not `curl`:
+
+```powershell
+curl.exe -u elastic:changeme http://localhost:9200/_cluster/health
+```
+
+**bash / macOS / Linux:**
+
 ```bash
 curl -u elastic:changeme http://localhost:9200/_cluster/health
 ```
+
+> In Windows PowerShell 5.1 (the default blue-icon shell), `curl` is an alias for `Invoke-WebRequest`, which
+> has no `-u` flag and fails with *"parameter name 'u' is ambiguous"*. Writing `curl.exe` calls the real curl
+> that ships with Windows 10+ and works in both PowerShell 5.1 and 7.
+
+A response containing `"status":"green"` or `"status":"yellow"` means you're ready for the next step.
 
 ### Expected output at each step
 
@@ -337,6 +351,7 @@ states that mean completely different things.
 
 | Problem | Fix |
 | --- | --- |
+| `curl : parameter name 'u' is ambiguous` | You are in Windows PowerShell, where `curl` aliases to `Invoke-WebRequest`. Use `curl.exe` instead. |
 | `Cannot connect to localhost:9200` | Elasticsearch needs ~60s. Poll `/_cluster/health`. |
 | Elasticsearch container exits | Raise Docker memory to 5 GB+. |
 | `Login failed for user 'sa'` | SQL Server starts slower than Elasticsearch. Wait, retry. |
