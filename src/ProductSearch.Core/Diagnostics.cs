@@ -1,7 +1,8 @@
+using Microsoft.Extensions.Logging;
 using Elastic.Clients.Elasticsearch;
 using Microsoft.Data.SqlClient;
 
-namespace ProductSearch.Api;
+namespace ProductSearch.Core;
 
 /// <summary>
 /// Checks every dependency and reports what is wrong in terms a developer can act on.

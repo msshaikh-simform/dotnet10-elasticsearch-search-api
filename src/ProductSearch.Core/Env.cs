@@ -1,4 +1,4 @@
-namespace ProductSearch.Api;
+namespace ProductSearch.Core;
 
 /// <summary>
 /// Connection settings, read from environment variables with local-development

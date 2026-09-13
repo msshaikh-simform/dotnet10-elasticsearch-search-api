@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/ProductSearch.Api/ProductSearch.Api.csproj" />
     <Project Path="src/ProductSearch.Benchmark/ProductSearch.Benchmark.csproj" />
+    <Project Path="src/ProductSearch.Core/ProductSearch.Core.csproj" />
     <Project Path="src/ProductSearch.Seeder/ProductSearch.Seeder.csproj" />
   </Folder>
 </Solution>

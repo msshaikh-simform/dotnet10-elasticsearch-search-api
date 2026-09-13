@@ -1,6 +1,6 @@
 using Elastic.Clients.Elasticsearch;
 
-namespace ProductSearch.Api;
+namespace ProductSearch.Core;
 
 /// <summary>
 /// Creates the products index: analyzers, mappings and the read alias.

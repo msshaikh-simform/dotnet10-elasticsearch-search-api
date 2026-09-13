@@ -12,13 +12,13 @@ System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalizat
 
 var count = args.Length > 0 && int.TryParse(args[0], out var n) ? n : 200_000;
 
-var masterConn  = ProductSearch.Api.Env.SqlMasterConnectionString;
-var catalogConn = ProductSearch.Api.Env.SqlConnectionString;
-var esUrl       = ProductSearch.Api.Env.ElasticsearchUrl;
+var masterConn  = ProductSearch.Core.Env.SqlMasterConnectionString;
+var catalogConn = ProductSearch.Core.Env.SqlConnectionString;
+var esUrl       = ProductSearch.Core.Env.ElasticsearchUrl;
 
 var elastic = new ElasticsearchClient(new ElasticsearchClientSettings(new Uri(esUrl))
     .Authentication(new BasicAuthentication(
-        ProductSearch.Api.Env.ElasticsearchUsername, ProductSearch.Api.Env.ElasticsearchPassword))
+        ProductSearch.Core.Env.ElasticsearchUsername, ProductSearch.Core.Env.ElasticsearchPassword))
     .RequestTimeout(TimeSpan.FromMinutes(5)));
 
 // Check both engines before generating anything. Without this, a stopped
@@ -115,7 +115,7 @@ Console.WriteLine($"  SQL Server loaded in {sw.ElapsedMilliseconds:N0} ms");
 // ---- 4. Bulk index into Elasticsearch ---------------------------------------
 var client = elastic;
 
-await ProductSearch.Api.ProductIndex.EnsureCreatedAsync(client);
+await ProductSearch.Core.ProductIndex.EnsureCreatedAsync(client);
 
 sw.Restart();
 var indexed = 0;
@@ -124,7 +124,7 @@ var failures = 0;
 // Batch by document count; a real pipeline would batch by payload size.
 foreach (var batch in products.Select((p, i) => (p, i)).GroupBy(x => x.i / 5_000).Select(g => g.Select(x => x.p).ToList()))
 {
-    var docs = batch.Select((p, i) => new ProductSearch.Api.ProductDocument
+    var docs = batch.Select((p, i) => new ProductSearch.Core.ProductDocument
     {
         Id = indexed + i + 1,
         Sku = p.Sku,
@@ -138,7 +138,7 @@ foreach (var batch in products.Select((p, i) => (p, i)).GroupBy(x => x.i / 5_000
     }).ToList();
 
     var response = await client.BulkAsync(b => b
-        .Index(ProductSearch.Api.ProductIndex.CurrentIndex)
+        .Index(ProductSearch.Core.ProductIndex.CurrentIndex)
         .IndexMany(docs, (d, doc) => d.Id(doc.Id.ToString())));
 
     // A bulk request can report overall success while individual items failed,
@@ -154,7 +154,7 @@ foreach (var batch in products.Select((p, i) => (p, i)).GroupBy(x => x.i / 5_000
     Console.Write($"\r  indexed {indexed:N0}/{count:N0}");
 }
 
-await client.Indices.RefreshAsync(ProductSearch.Api.ProductIndex.CurrentIndex);
+await client.Indices.RefreshAsync(ProductSearch.Core.ProductIndex.CurrentIndex);
 Console.WriteLine($"\r  Elasticsearch indexed in {sw.ElapsedMilliseconds:N0} ms ({failures} failures)   ");
 Console.WriteLine($"Done in {total.Elapsed.TotalSeconds:N1}s");
 

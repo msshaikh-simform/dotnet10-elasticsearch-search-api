@@ -1,6 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 
-namespace ProductSearch.Api;
+namespace ProductSearch.Core;
 
 /// <summary>The product as it exists in SQL Server, which is the source of truth.</summary>
 public sealed class Product
@@ -69,10 +69,10 @@ public sealed record ProductSearchRequest
     [Range(1, 10_000, ErrorMessage = "page must be 1 or greater")]
     public int? Page { get; init; }
 
-    internal string Term => Q ?? "";
-    internal bool UseFuzzy => Fuzzy ?? false;
-    internal int PageSize => Size ?? 20;
-    internal int PageNumber => Page ?? 1;
+    public string Term => Q ?? "";
+    public bool UseFuzzy => Fuzzy ?? false;
+    public int PageSize => Size ?? 20;
+    public int PageNumber => Page ?? 1;
 }
 
 /// <summary>A single result row, identical whichever engine produced it.</summary>

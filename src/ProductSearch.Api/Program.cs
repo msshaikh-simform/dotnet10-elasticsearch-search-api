@@ -2,7 +2,7 @@ using Elastic.Clients.Elasticsearch;
 using Elastic.Transport;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
-using ProductSearch.Api;
+using ProductSearch.Core;
 
 // Numbers format identically regardless of the machine locale.
 System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;

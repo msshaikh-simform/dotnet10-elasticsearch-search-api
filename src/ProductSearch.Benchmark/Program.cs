@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using Elastic.Clients.Elasticsearch;
 using Elastic.Transport;
-using ProductSearch.Api;
+using ProductSearch.Core;
 
 // SQL Server LIKE '%term%' vs Elasticsearch, on identical data.
 // Reports p50/p95/p99 and throughput at several concurrency levels, because

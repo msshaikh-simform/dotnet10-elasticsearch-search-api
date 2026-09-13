@@ -5,7 +5,7 @@ using Elastic.Clients.Elasticsearch.QueryDsl;
 using Microsoft.Data.SqlClient;
 using SourceFilter = Elastic.Clients.Elasticsearch.Core.Search.SourceFilter;
 
-namespace ProductSearch.Api;
+namespace ProductSearch.Core;
 
 /// <summary>Raised when a request asks for a page beyond Elasticsearch's result window.</summary>
 public sealed class SearchWindowExceededException(int requested, int limit)

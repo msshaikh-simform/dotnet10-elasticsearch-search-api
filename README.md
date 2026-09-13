@@ -218,10 +218,14 @@ Deep links work: `http://localhost:5080/?q=wireless+headphones&fuzzy=1`
 
 ```
 docker-compose.yml                        Elasticsearch 9.5.3 + SQL Server 2022
-src/ProductSearch.Api/
+src/ProductSearch.Core/
   ProductIndex.cs                         mapping, analyzers, alias  <- start here
   SearchServices.cs                       both engines, side by side
-  Program.cs                              client registration, endpoints
+  Catalog.cs                              models, request and response contracts
+  Diagnostics.cs                          dependency checks and hints
+  Env.cs                                  connection settings with dev defaults
+src/ProductSearch.Api/
+  Program.cs                              client registration, endpoints, error handling
   wwwroot/index.html                      demo UI
 src/ProductSearch.Seeder/                 200k products -> SQL -> bulk index
 src/ProductSearch.Benchmark/              p50/p95/p99 + throughput
@@ -235,7 +239,7 @@ docs/benchmark-results.md                 full results and method
 ## Configuration
 
 **Nothing needs configuring to run it.** Every setting has a local-development default, defined in one place:
-[`src/ProductSearch.Api/Env.cs`](src/ProductSearch.Api/Env.cs). No credentials live anywhere else in the source.
+[`src/ProductSearch.Core/Env.cs`](src/ProductSearch.Core/Env.cs). No credentials live anywhere else in the source.
 
 Override any of them with environment variables:
 
@@ -337,6 +341,7 @@ states that mean completely different things.
 | Elasticsearch container exits | Raise Docker memory to 5 GB+. |
 | `Login failed for user 'sa'` | SQL Server starts slower than Elasticsearch. Wait, retry. |
 | SQL search times out | Expected above ~10 concurrent users. That is the finding, not a bug. |
+| Build fails: "file is locked by ProductSearch.Api" | Fixed in this repo - the Seeder and Benchmark reference `ProductSearch.Core`, not the API executable, so you can re-seed while the API runs. |
 | Port 5080 in use | `dotnet run --project src/ProductSearch.Api -- --urls http://localhost:5090` |
 
 ## Development-only warnings
