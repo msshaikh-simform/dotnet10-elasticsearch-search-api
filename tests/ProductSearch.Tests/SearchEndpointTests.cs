@@ -25,31 +25,31 @@ public sealed class SearchEndpointTests(WebApplicationFactory<Program> factory)
     [Fact]
     public async Task Size_above_the_maximum_is_rejected_with_400()
     {
-        var response = await Client.GetAsync("/api/search?q=wireless&size=999");
+        var response = await Client.GetAsync("/api/search?q=wireless&size=999", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
-        var body = await response.Content.ReadAsStringAsync();
+        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         Assert.Contains("size must be between 1 and 100", body);
     }
 
     [Fact]
     public async Task Missing_search_term_is_rejected_with_400()
     {
-        var response = await Client.GetAsync("/api/search?q=");
+        var response = await Client.GetAsync("/api/search?q=", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("Provide a search term", await response.Content.ReadAsStringAsync());
+        Assert.Contains("Provide a search term", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
     }
 
     [Fact]
     public async Task Page_beyond_the_result_window_is_rejected_with_400_not_500()
     {
         // from = 10,000 is past the window, so this is the explained failure.
-        var response = await Client.GetAsync("/api/search?q=wireless&page=501&size=20");
+        var response = await Client.GetAsync("/api/search?q=wireless&page=501&size=20", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("search_after", await response.Content.ReadAsStringAsync());
+        Assert.Contains("search_after", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class SearchEndpointTests(WebApplicationFactory<Program> factory)
         // from + size is exactly the 10,000 window. The look-ahead hit used to
         // push the request one past it, and Elasticsearch rejected the whole
         // thing - the API returned 500 where it had promised 400.
-        var response = await Client.GetAsync("/api/search?q=wireless&page=500&size=20");
+        var response = await Client.GetAsync("/api/search?q=wireless&page=500&size=20", TestContext.Current.CancellationToken);
 
         if (await SkipWhenNotSeeded(response)) return;
 
@@ -71,13 +71,14 @@ public sealed class SearchEndpointTests(WebApplicationFactory<Program> factory)
     [InlineData("SONY")]
     public async Task Brand_filter_ignores_case(string brand)
     {
-        var response = await Client.GetAsync($"/api/search?q=wireless&brand={brand}");
+        var response = await Client.GetAsync($"/api/search?q=wireless&brand={brand}",
+            TestContext.Current.CancellationToken);
 
         if (await SkipWhenNotSeeded(response)) return;
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var body = await response.Content.ReadAsStringAsync();
+        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         Assert.DoesNotContain("\"count\":0", body);
     }
 

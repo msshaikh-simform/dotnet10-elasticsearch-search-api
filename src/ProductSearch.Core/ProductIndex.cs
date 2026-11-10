@@ -96,7 +96,7 @@ public static class ProductIndex
     public static async Task RecreateAsync(ElasticsearchClient client, CancellationToken ct = default)
     {
         var existing = await client.Indices.GetAliasAsync(a => a.Name(Alias), ct);
-        if (existing.IsValidResponse)
+        if (existing.IsValidResponse && existing.Aliases is { Count: > 0 })
             foreach (var index in existing.Aliases.Keys)
                 await client.Indices.DeleteAsync(index, ct);
 
@@ -127,7 +127,9 @@ public static class ProductIndex
 
         // Which concrete indices the alias points at today.
         var current = await client.Indices.GetAliasAsync(a => a.Name(Alias), ct);
-        var previous = current.IsValidResponse ? current.Aliases.Keys.ToArray() : [];
+        var previous = current.IsValidResponse && current.Aliases is not null
+            ? current.Aliases.Keys.ToArray()
+            : [];
 
         // One request, so there is never a moment with no index behind the alias.
         //
