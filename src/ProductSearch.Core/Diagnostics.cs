@@ -8,8 +8,12 @@ namespace ProductSearch.Core;
 /// Checks every dependency and reports what is wrong in terms a developer can act on.
 /// The goal is that nobody ever stares at an empty result list wondering why.
 /// </summary>
-public sealed class Diagnostics(ElasticsearchClient client, string sqlConnectionString)
+public sealed class Diagnostics(ElasticsearchClient client, string sqlConnectionString, string? elasticsearchUrl = null)
 {
+    // The URL actually in use. Hints that name the environment default are wrong
+    // whenever configuration overrode it, and send the reader to the wrong host.
+    private readonly string esUrl = elasticsearchUrl ?? Env.ElasticsearchUrl;
+
     public async Task<HealthReport> CheckAsync(CancellationToken ct = default)
     {
         var checks = new List<DependencyStatus>();
@@ -22,7 +26,7 @@ public sealed class Diagnostics(ElasticsearchClient client, string sqlConnection
             var ping = await client.PingAsync(ct);
             esOk = ping.IsValidResponse;
             checks.Add(esOk
-                ? new DependencyStatus("Elasticsearch", true, $"reachable at {Env.ElasticsearchUrl}")
+                ? new DependencyStatus("Elasticsearch", true, $"reachable at {esUrl}")
                 : new DependencyStatus("Elasticsearch", false,
                     ping.ElasticsearchServerError?.Error?.Reason ?? "ping failed",
                     "Is the container running and finished starting? Elasticsearch needs roughly 60 seconds. Try: docker compose up -d"));
@@ -30,7 +34,7 @@ public sealed class Diagnostics(ElasticsearchClient client, string sqlConnection
         catch (Exception ex)
         {
             checks.Add(new DependencyStatus("Elasticsearch", false, Describe(ex),
-                $"Cannot reach {Env.ElasticsearchUrl}. Start it with: docker compose up -d"));
+                $"Cannot reach {esUrl}. Start it with: docker compose up -d"));
         }
 
         // ---- Index exists, and does it have anything in it? --------------------

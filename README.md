@@ -1,46 +1,46 @@
 # High-Performance Search APIs in .NET 10 with Elasticsearch
 
-A runnable proof of concept that puts **SQL Server `LIKE '%term%'` and Elasticsearch side by side** over the
-same 200,000-product catalog — same data, same machine, same queries — and measures the difference.
+Companion to the article: **[Building High-Performance Search APIs in .NET 10 Using Elasticsearch](https://medium.com/@msshaikh-simform/41f654941346)**
 
-> **Headline:** at 20 concurrent users, SQL Server p50 is **41,572 ms**. Elasticsearch is **76 ms**.
+A runnable proof of concept that puts **three search engines side by side** over the same 200,000-product
+catalog — same data, same machine, same queries — and measures the difference:
+
+| | |
+| --- | --- |
+| **SQL Server `LIKE '%term%'`** | the baseline almost every catalog starts with |
+| **SQL Server Full-Text Search** | the strongest option *inside* the database |
+| **Elasticsearch** | the purpose-built search engine |
+
+> **Headline:** at 20 concurrent users, `LIKE` p50 is **126,779 ms**, full-text is **10,945 ms**, Elasticsearch
+> is **195 ms**. More telling: `LIKE` and full-text serve a flat 0.1–3.0 req/s no matter how many users arrive,
+> while Elasticsearch climbs from 25 to 85.
 > Full method and numbers: [docs/benchmark-results.md](docs/benchmark-results.md)
 
+The comparison includes full-text search on purpose. Comparing Elasticsearch only against `LIKE` is the easiest
+objection to raise against a post like this, so the stronger SQL option is measured rather than argued about.
+
 Every response carries its own timing, so the difference is visible in the payload itself — no profiler needed.
-The same query, hitting each engine:
 
 ```jsonc
-// GET /api/search?q=wireless headphones&size=2
+// GET /api/search?q=wireless headphone&size=2
 {
   "engine": "elasticsearch",
-  "query": "wireless headphones",
+  "query": "wireless headphone",
   "count": 2,
   "page": 1, "size": 2, "hasMore": true,
-  "elapsedMs": 32,          // measured by the API (includes network + deserialization)
-  "tookMs": 19,             // reported by the cluster itself
+  "elapsedMs": 46,          // measured by the API (includes network + deserialization)
+  "tookMs": 34,             // reported by the cluster itself
   "items": [
-    { "id": 15030, "sku": "SKU-0015030", "name": "Philips Portable Wireless Headphone 327",
-      "brand": "Philips", "price": 781.89 },
-    { "id": 15069, "sku": "SKU-0015069", "name": "Dell Wireless Ultra Headphone 541",
-      "brand": "Dell",    "price": 475.65 }
+    { "id": 7166, "sku": "SKU-0007166", "name": "Wireless Portable Headphone 898",
+      "brand": "Sony",    "price": 1091.61 },
+    { "id": 7462, "sku": "SKU-0007462", "name": "Ultra Wireless Headphone 419",
+      "brand": "Samsung", "price": 612.71 }
   ],
-  "facets": { "Dell": 6965, "Logitech": 6955, "Xiaomi": 6927 }   // same request, no extra queries
+  "facets": { "Sony": 7028, "Xiaomi": 7001, "Philips": 6993 }   // same request, no extra queries
 }
 ```
 
-```jsonc
-// GET /api/search/sql?q=wireless headphones&size=2
-{
-  "engine": "sql",
-  "query": "wireless headphones",
-  "count": 0,               // no match: names contain "Headphone", LIKE cannot stem
-  "elapsedMs": 1328,        // and it still scanned all 200,000 rows to find nothing
-  "items": [],
-  "facets": null            // facet counts would need a separate GROUP BY scan per filter
-}
-```
-
-![SQL Server vs Elasticsearch, side by side](docs/screenshots/01-speed.png)
+![Three engines, side by side](docs/screenshots/01-speed.png)
 
 ---
 
@@ -59,40 +59,31 @@ gets read. That cost grows with your table. An inverted index does not work that
 | --- | --- |
 | Inverted index + full-text search | `/api/search` |
 | Analyzers: stemming, ASCII folding, synonyms | `ProductIndex.cs` |
-| Multi-fields (one value, several jobs) | `name`, `name.keyword`, `name.suggest` |
-| Relevance scoring (BM25) + field boosts | `name^3, brand^2, description` |
-| Filter context vs query context | `filter` clauses for brand / price / stock |
+| Multi-fields (one value, several jobs) | `name`, `name.keyword`, `name.suggest`, `brand`, `brand.text` |
+| Relevance scoring (BM25) + field boosts | `name^3, brand.text^2, description` |
+| Filter context vs query context | `filter` clauses for brand, price and stock |
 | Aggregations for facet counts | `by_brand`, `by_category` — same request |
 | Typo tolerance (fuzziness) | `?fuzzy=true` |
 | Autocomplete (`search_as_you_type`) | `/api/suggest` |
 | Bulk indexing with per-item error checks | `ProductSearch.Seeder` |
-| Index alias for zero-downtime reindexing | `products` → `products-v1` |
+| Index alias for zero-downtime reindexing | `products` → `products-v2` |
+| **Zero-downtime reindex + atomic alias swap** | `--reindex`, see [Case 10](#case-10--zero-downtime-reindexing) |
 
 ### What .NET 10 brings to this
 
-The API is not just *hosted* on .NET 10 — it uses features that only exist there:
-
 | Feature | Where you see it |
 | --- | --- |
-| **Minimal API validation** | `ProductSearchRequest` carries `[Required]`, `[Range]`, `[StringLength]`. An invalid request never reaches the handler — `?size=999` comes back as a 400 naming the field. |
-| **OpenAPI 3.1** (3.0 previously) | `GET /openapi/v1.json` reports `"openapi": "3.1.1"` |
-| **XML comments in OpenAPI** | Endpoint summaries in the document come from `///` comments in the source |
-| **`Microsoft.Extensions.Validation`** | Validation moved out of ASP.NET-only territory; it ships in the shared framework, so no package reference is needed |
-
-```jsonc
-// GET /api/search?q=wireless&size=999
-{
-  "title": "One or more validation errors occurred.",
-  "status": 400,
-  "errors": { "Size": ["size must be between 1 and 100"] }
-}
-```
+| **Minimal API validation** | `ProductSearchRequest` carries `[Required]`, `[Range]`, `[StringLength]`. An invalid request never reaches the handler — `?size=999` comes back as a 400 naming the field. Covered by a test. |
+| **OpenAPI 3.1** (3.0 previously) | `GET /openapi/v1.json` reports `"openapi": "3.1.1"`, with `TypedResults` and `ProducesProblem` so success *and* error shapes are documented |
+| **XML comments in OpenAPI** | Endpoint summaries come from `///` comments in the source |
+| **`Microsoft.Extensions.Validation`** | Ships in the shared framework, so no package reference is needed |
 
 ### Not covered here
 
 Outbox/CDC syncing, `search_after` deep pagination, caching, resilience policies, multi-tenancy,
 OpenTelemetry, vector/hybrid search. They are real production concerns, but each one would pull attention away
-from the single question this POC exists to answer: how far does `LIKE` get you, and where does it stop?
+from the question this POC exists to answer: how far do `LIKE` and full-text search get you, and where do they
+stop?
 
 ---
 
@@ -100,7 +91,7 @@ from the single question this POC exists to answer: how far does `LIKE` get you,
 
 - **.NET 10 SDK**
 - **Docker Desktop**, at least **5 GB** allocated (Settings → Resources)
-- ~3 GB disk for images, ~500 MB for data
+- ~4 GB disk for images, ~600 MB for data
 
 Commands below are shown for **PowerShell**, the Windows default. They work unchanged in bash except where
 noted (`curl.exe` becomes `curl`).
@@ -111,28 +102,42 @@ noted (`curl.exe` becomes `curl`).
 git clone https://github.com/msshaikh-simform/dotnet10-elasticsearch-search-api.git
 cd dotnet10-elasticsearch-search-api
 
-docker compose up -d                                                # 1. Elasticsearch 9.5.3 + SQL Server 2022
-dotnet run --project src/ProductSearch.Seeder -c Release -- 200000   # 2. seed + index (35-80s)
+docker compose up -d --build                                         # 1. Elasticsearch 9.5.3 + SQL Server 2022
+dotnet run --project src/ProductSearch.Seeder -c Release -- 200000   # 2. seed + index (3-5 min)
 dotnet run --project src/ProductSearch.Api    -c Release             # 3. API + demo UI
 ```
 
 Open **<http://localhost:5080>**.
 
-> ⚠️ **Step 2 is required and is not automatic.** The API does not seed on startup. Skip it and both engines
-> return zero results for everything. Run it once after the containers are healthy; re-run it any time to
-> rebuild from scratch (it drops and recreates the SQL table and overwrites the Elasticsearch documents).
+> ⚠️ **Step 1 builds an image, so the first run takes a few minutes.** The stock SQL Server image does not
+> include Full-Text Search — `SERVERPROPERTY('IsFullTextInstalled')` returns 0 — so
+> [`docker/sqlserver/Dockerfile`](docker/sqlserver/Dockerfile) installs `mssql-server-fts` on top of it.
+> Docker caches the result; later runs are instant. Without it, the `LIKE` and Elasticsearch engines still work
+> and `/api/search/sqlfts` returns a 503 explaining what to do.
+
+> ⚠️ **Step 2 is required and is not automatic.** The API does not seed on startup. Skip it and every engine
+> returns zero results. Most of the time is the SQL Server full-text index populating, which the seeder waits
+> for — benchmarking a half-populated index would quietly flatter `LIKE`.
+
+### Behind a TLS-intercepting proxy?
+
+If your network inspects TLS (Zscaler and similar), the image build fails with
+*"Certificate verification failed: The certificate issuer is unknown"* because the container cannot verify
+`packages.microsoft.com`. Drop your corporate root CA into `docker/sqlserver/certs/` and build with:
+
+```powershell
+docker compose build --build-arg EXTRA_CA_CERT=your-ca.crt
+```
+
+That directory is gitignored. On an ordinary network you need none of this.
 
 ### Verify before you start
 
 Elasticsearch takes ~60s to come up. Most "cannot connect" problems are just that:
 
-**PowerShell** — note `curl.exe`, not `curl`:
-
 ```powershell
 curl.exe -u elastic:changeme http://localhost:9200/_cluster/health
 ```
-
-**bash / macOS / Linux:**
 
 ```bash
 curl -u elastic:changeme http://localhost:9200/_cluster/health
@@ -142,15 +147,15 @@ curl -u elastic:changeme http://localhost:9200/_cluster/health
 > has no `-u` flag and fails with *"parameter name 'u' is ambiguous"*. Writing `curl.exe` calls the real curl
 > that ships with Windows 10+ and works in both PowerShell 5.1 and 7.
 
-A response containing `"status":"green"` or `"status":"yellow"` means you're ready for the next step.
+A response containing `"status":"green"` or `"status":"yellow"` means you're ready.
 
 ### Expected output at each step
 
 | Step | You should see |
 | --- | --- |
-| `docker compose up -d` | 2 containers: `ps-elasticsearch`, `ps-sqlserver` |
-| Seeder | `SQL Server loaded in 4,000-12,000 ms`, `Elasticsearch indexed in 26,000-42,000 ms (0 failures)` |
-| Index check | `products-v1` — 200,000 docs, ~100-106 MB |
+| `docker compose up -d --build` | 2 containers: `ps-elasticsearch`, `ps-sqlserver` |
+| Seeder | `SQL Server loaded in …`, `full-text index built in …`, `Elasticsearch indexed in … (0 failures)` |
+| Index check | `products-v2` — 200,000 docs, ~105 MB |
 | API | Listening on `http://localhost:5080` |
 
 ---
@@ -159,13 +164,13 @@ A response containing `"status":"green"` or `"status":"yellow"` means you're rea
 
 Open **<http://localhost:5080>**. Each numbered chip under the search box runs one case.
 
-**Where to look:** the big number under **`elapsed`** on each panel — purple is SQL Server, teal is
-Elasticsearch — and the **`results`** count beside it. Elasticsearch also reports **`cluster took`**, which is
+**Where to look:** the big number under **`elapsed`** on each panel — purple is `LIKE`, amber is full-text,
+teal is Elasticsearch — and the **`results`** count beside it. Elasticsearch also reports **`cluster took`**,
 its own measurement excluding network and deserialization.
 
-> **Read this before judging the numbers.** The page fires both queries *simultaneously*, so the SQL scan
-> saturates every core while Elasticsearch is answering. That inflates Elasticsearch's `elapsed` — compare
-> `cluster took` for its real cost, or run the benchmark below, which tests each engine separately.
+> **Read this before judging the numbers.** The page fires all three queries *simultaneously*, so the `LIKE`
+> scan saturates every core while the other two are answering. That inflates their `elapsed` — compare
+> `cluster took` for Elasticsearch's real cost, or run the benchmark, which tests each engine separately.
 
 ---
 
@@ -175,42 +180,24 @@ its own measurement excluding network and deserialization.
 
 ![Speed comparison](docs/screenshots/01-speed.png)
 
-| | SQL Server | Elasticsearch |
-| --- | --- | --- |
-| Results | 20 | 20 |
-| Time | ~1,000–2,800 ms | ~15–40 ms (`cluster took` ~19 ms) |
+| | `LIKE` | Full-Text | Elasticsearch |
+| --- | --- | --- | --- |
+| Results | 20 | 20 | 20 |
+| Benchmarked p50 | ~5,600 ms | ~380 ms | **~39 ms** |
 
-**Both engines return 20 results.** Nothing is different except how they found them, which makes this the
-clean speed comparison — nobody can dismiss it as "you compared a working query to a failing one."
+**All three return 20 results.** Nothing is different except how they found them, which makes this the clean
+speed comparison — nobody can dismiss it as "you compared a working query to a failing one."
 
-**Why SQL is slow.** `LIKE '%wireless%'` has a leading wildcard, so no index can be used — the engine has no
-way to know where inside the text a match begins. Measured with `SET STATISTICS IO`:
+**Why `LIKE` is slow.** The leading wildcard means no index can be used — the engine has no way to know where
+inside the text a match begins, so every row is read. Its cost is proportional to **rows stored**.
 
-```
-Table 'Products'. Scan count 9, logical reads 19116
-CPU time = 8499 ms,  elapsed time = 1205 ms
-```
+**Why the other two are fast.** Both consult an index built at write time and touch only the entries for the
+terms in the query. Their cost is proportional to **rows matched**.
 
-**19,116 pages ≈ 149 MB read — the entire table — and 8.5 seconds of CPU, to return 20 rows.**
-
-**Why Elasticsearch is fast.** The terms were computed once, at index time. The query is two posting-list
-lookups and an intersection:
-
-```
-name:wireless   ->  9.65 ms
-name:headphon   -> 39.81 ms
-description:*   ->  0.20 ms
-```
-
-It never reads the 105 MB index — only the entries for those two terms.
-
-> **The rule:** SQL's cost is proportional to **rows stored**. Elasticsearch's is proportional to **rows
-> matched**. Here that is 200,000 versus 20.
-
-**Now look at the result lists — this is the part people miss.** SQL returns *twenty consecutive Anker
-products*, because `ORDER BY Name` is alphabetical and "Anker" sorts first. Elasticsearch returns Philips,
-Dell, Bose, Lenovo, JBL, Xiaomi — **ranked by relevance**. A real user would look at the SQL column and
-conclude the search is broken. **SQL has no concept of a "best" match.**
+**Now look at the result lists.** `LIKE` returns twenty consecutive *Anker* products, because `ORDER BY Name`
+is alphabetical and "Anker" sorts first. Full-text orders by `RANK`; Elasticsearch orders by BM25 relevance.
+A real user would look at the `LIKE` column and conclude the search is broken. **`LIKE` has no concept of a
+"best" match.**
 
 ---
 
@@ -220,16 +207,16 @@ conclude the search is broken. **SQL has no concept of a "best" match.**
 
 ![Stemming](docs/screenshots/02-stemming.png)
 
-| | SQL Server | Elasticsearch |
-| --- | --- | --- |
-| Results | **0** | 20 |
-| Time | ~1,300 ms | ~30 ms |
+| | `LIKE` | Full-Text | Elasticsearch |
+| --- | --- | --- | --- |
+| Results | **0** | 20 | 20 |
 
-The products are named "Headphone". You typed "headphone**s**". SQL scanned all 200,000 rows for 1.3 seconds
-and **found nothing**.
+The products are named "Headphone". You typed "headphone**s**". `LIKE` scanned all 200,000 rows and **found
+nothing** — no amount of tuning fixes it, because `LIKE` has no concept of word forms.
 
-Elasticsearch reduced both the stored text and your query to the same root — `headphon` — so they match. No
-amount of tuning fixes this in SQL: `LIKE` has no concept of word forms.
+**This is the case full-text search wins.** `FREETEXT` matches inflectional forms, so it finds them, exactly as
+Elasticsearch does by stemming both sides to `headphon`. If plurals are the only gap you have, full-text search
+may be all you need — and it needs no new infrastructure.
 
 ---
 
@@ -239,14 +226,17 @@ amount of tuning fixes this in SQL: `LIKE` has no concept of word forms.
 
 ![Typo tolerance](docs/screenshots/03-typo.png)
 
-| | SQL Server | Elasticsearch |
-| --- | --- | --- |
-| Results | **0** | 20 |
+| | `LIKE` | Full-Text | Elasticsearch |
+| --- | --- | --- | --- |
+| Results | **0** | 20 * | 20 |
 
-One transposed letter. SQL can't approximate; Elasticsearch matches within an edit distance scaled to word
-length.
+One transposed letter. Elasticsearch matches within an edit distance scaled to word length.
 
-> **Why this example and not `wireles`.** An earlier version used `wireles`, and SQL returned 20 results —
+> **\* Full-text does not actually tolerate the typo.** `FREETEXT` treats its terms as OR, so this query
+> returns results purely because "headphone" matches. Search for `wirless` on its own and full-text returns
+> **0**, same as `LIKE`. There is no edit distance in SQL Server full-text search.
+
+> **Why this example and not `wireles`.** An earlier version used `wireles`, and `LIKE` returned 20 results —
 > because "wireles" is a *substring* of "Wireless", so `LIKE '%wireles%'` matched by coincidence. That proved
 > nothing. `wirless` is a genuine misspelling that is not a substring of anything in the data.
 
@@ -261,33 +251,34 @@ One character separates `SKU-0015030` from `SKU-0015031`.
 
 ![Synonyms](docs/screenshots/04-synonym.png)
 
-| | SQL Server | Elasticsearch |
-| --- | --- | --- |
-| Results | **0** | 20 — all **Laptop** products |
+| | `LIKE` | Full-Text | Elasticsearch |
+| --- | --- | --- | --- |
+| Results | **0** | **0** | 20 — all **Laptop** products |
 
-**The word "notebook" appears nowhere in the data.** Elasticsearch returns "Samsung Wireless Studio Laptop
-760" and friends because the analyzer expands `notebook` to `laptop` at search time.
+**The word "notebook" appears nowhere in the data.** Elasticsearch returns laptops because the analyzer expands
+`notebook` to `laptop` at search time, and because the expansion happens at *search* time the synonym list can
+change without reindexing 200,000 documents.
 
-Because the expansion happens at *search* time, the synonym list can change without reindexing 200,000
-documents.
+**Full-text search returns nothing here.** SQL Server does support a thesaurus, but it ships empty — it needs
+an XML file per language and a reload before `FORMSOF(THESAURUS, …)` does anything at all.
 
-> **Why this example and not `television`.** An earlier version searched `television`, but products are
-> literally *named* "Television" — both engines matched directly and the `tv, television` synonym was never
-> exercised. `notebook` has no literal match, so only the synonym can find it.
+> **Why this example and not `television`.** Products are literally *named* "Television", so every engine
+> matches directly and the `tv, television` synonym is never exercised. `notebook` has no literal match, so
+> only the synonym can find it.
 
 ---
 
 ### Case 5 — Facets, free with the search
 
-**Click a brand chip** at the bottom of the Elasticsearch panel
+**Set the result count low and look at the Elasticsearch panel:** <http://localhost:5080/?q=wireless+headphone&size=5>
 
 ![Facets](docs/screenshots/05-facets.png)
 
-The counts — `Dell (2569)`, `Logitech (2532)` — arrived **in the same request as the results**. Clicking one
+The counts — `Sony (7028)`, `Xiaomi (7001)` — arrived **in the same request as the results**. Clicking one
 filters instantly.
 
-SQL Server has no equivalent. Each of those eight counts would be a separate `GROUP BY` over the same
-unindexable scan: **eight more full-table scans** to render one sidebar.
+Neither SQL engine has an equivalent. Each of those eight counts would be a separate `GROUP BY` over the same
+data: eight more passes to render one sidebar.
 
 ---
 
@@ -296,28 +287,51 @@ unindexable scan: **eight more full-table scans** to render one sidebar.
 **Type `sony wire` slowly in the search box**
 
 Suggestions appear as you type, from a `search_as_you_type` field, fast enough to fire on every keystroke.
-There is no practical SQL equivalent at 200,000 rows — each keystroke would be another full scan.
+There is no practical SQL equivalent at 200,000 rows on every keystroke.
 
 ---
 
-### Case 7 — Where SQL Server wins
+### Case 7 — Brand matching across fields
+
+Three names in five lead with the brand; the rest do not. Try
+<http://localhost:5080/?q=sony+battery+headphone>.
+
+That one query matches a **brand** (`brand.text`), a **feature** (`description`) and a **product type**
+(`name`) in three different fields, and blends them into a single relevance score.
+
+```
+8,036 Sony products whose name does not contain "Sony"
+```
+
+Those are findable *only* through the brand field. This is also the case to try with `?brand=sony` — the filter
+is case-insensitive, so lowercase works.
+
+> **This used to be broken, silently.** `brand` was mapped as a bare `keyword`, and in a `multi_match` a
+> keyword field only matches when the *whole* query string equals the stored value. `brand^2` matched **0**
+> documents for `sony wireless headphones`, and `?brand=sony` returned nothing while `?brand=Sony` worked.
+> The fix is the `brand.text` sub-field plus `CaseInsensitive = true` on the term filter. No error was ever
+> raised — the boost simply did nothing.
+
+---
+
+### Case 8 — Where SQL Server wins
 
 Open **<http://localhost:5080/api/lookup/sql?sku=SKU-0100000>**
 
 | Engine | p50 | Throughput |
 | --- | --- | --- |
-| **SQL Server** | **1 ms** | **499 req/s** |
-| Elasticsearch | 11 ms | 90 req/s |
+| **SQL Server** | **4 ms** | **221.5 req/s** |
+| Elasticsearch (`term` on `sku`) | 12 ms | 62.6 req/s |
 
-An indexed column and an exact value: the database is **11× faster**. This case is in the POC deliberately.
-Elasticsearch is not a database replacement — it is a read model for the queries a database is bad at, and a
-comparison that only ever favours one side isn't worth trusting.
+An indexed column and an exact value: the database is **about 3× faster**. This case is in the POC
+deliberately. Elasticsearch is not a database replacement — it is a read model for the queries a database is
+bad at, and a comparison that only ever favours one side isn't worth trusting.
 
 ---
 
-### Case 8 — Under load, which is where it actually matters
+### Case 9 — Under load, which is where it actually matters
 
-Single searches take 1–3 seconds. Annoying, but survivable for one user. Real applications have many.
+Single searches are survivable for one user. Real applications have many.
 
 **Stop the API first** (Ctrl+C) so it doesn't compete for CPU, then:
 
@@ -325,48 +339,42 @@ Single searches take 1–3 seconds. Annoying, but survivable for one user. Real 
 dotnet run --project src/ProductSearch.Benchmark -c Release -- --requests 40
 ```
 
-Takes about 5 minutes and will fully load your CPU. Results below.
+Takes about 10 minutes and will fully load your CPU. Results in
+[docs/benchmark-results.md](docs/benchmark-results.md).
+
+---
+
+### Case 10 — Zero-downtime reindexing
+
+Some mapping changes cannot be applied in place. The usual answer is "build a new index and swap the alias",
+which is easy to describe and rarely shown. Run it:
+
+```powershell
+dotnet run --project src/ProductSearch.Seeder -c Release -- --reindex products-v3
+```
+
+It creates `products-v3` with the current mapping, copies every document across, then moves the `products`
+alias in a single atomic `UpdateAliases` call. **Searches keep working throughout** — the API never learns the
+index name, because it only ever queries the alias. The old index stays in place for an immediate rollback.
+
+---
 
 ## Results
 
-### Full-text search, 200,000 products
+See [docs/benchmark-results.md](docs/benchmark-results.md) for the full tables, the repeatability spread
+between runs, and the measurement caveats.
 
-| Concurrency | Engine | p50 | p95 | p99 | Throughput |
-| --- | --- | --- | --- | --- | --- |
-| 1 | SQL Server | 1,709 ms | 2,081 ms | 2,357 ms | 0.6 req/s |
-| 1 | Elasticsearch | **18 ms** | 34 ms | 146 ms | **41.2 req/s** |
-| 5 | SQL Server | 9,194 ms | 9,756 ms | 9,937 ms | 0.6 req/s |
-| 5 | Elasticsearch | **29 ms** | 45 ms | 67 ms | **153.2 req/s** |
-| 20 | SQL Server | 41,572 ms | 43,995 ms | 44,753 ms | 0.5 req/s |
-| 20 | Elasticsearch | **76 ms** | 289 ms | 297 ms | **125.0 req/s** |
+| Concurrency | `LIKE` p50 | Full-Text p50 | Elasticsearch p50 | `LIKE` tput | Full-Text tput | ES tput |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 5,621 ms | 381 ms | **39 ms** | 0.2 req/s | 2.4 req/s | **25.3 req/s** |
+| 5 | 24,074 ms | 1,225 ms | **57 ms** | 0.2 req/s | 3.0 req/s | **77.2 req/s** |
+| 20 | 126,779 ms | 10,945 ms | **195 ms** | 0.1 req/s | 1.5 req/s | **85.5 req/s** |
 
-**Throughput matters more than latency here.** SQL Server is stuck at 0.5-0.6 req/s at *every* concurrency
-level - extra users just queue. Elasticsearch scales from 41 to 153 req/s.
-
-One `LIKE` query over this catalog burns **8.5 seconds of CPU** to return 20 rows, because the work is
-proportional to rows stored. At 20 users its p99 is 45 seconds: a timeout in any real application.
-
-### Where SQL Server wins
-
-| Engine | p50 | Throughput |
-| --- | --- | --- |
-| **SQL Server** (exact SKU) | **1 ms** | **499.6 req/s** |
-| Elasticsearch | 11 ms | 90.0 req/s |
-
-Indexed identifier, exact value — the database is the right tool. Elasticsearch is not a database replacement;
-it is a read model for queries a database is bad at.
-
-### Run it yourself
-
-```powershell
-dotnet run --project src/ProductSearch.Benchmark -c Release -- --requests 40
-```
+**Throughput matters more than latency here.** `LIKE` and full-text both have a fixed ceiling they hit
+immediately; only Elasticsearch answers more requests as more users arrive.
 
 Measured on an i5-1135G7 (4c/8t), 16 GB RAM, everything on one laptop. Absolute numbers are indicative — but
-both engines faced identical data and conditions.
-
-**The SQL side is deliberately steelmanned:** raw ADO.NET (no ORM), and the query splits terms and requires all
-of them rather than matching one contiguous phrase. It is as fast as that approach can be made.
+all three engines faced identical data and conditions.
 
 ---
 
@@ -374,44 +382,64 @@ of them rather than matching one contiguous phrase. It is as fast as that approa
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/search?q=&brand=&maxPrice=&fuzzy=&page=&size=` | **Primary.** Elasticsearch with filters, facets and paging |
-| `GET /api/search/sql?q=&page=&size=` | SQL Server `LIKE` baseline, for comparison only |
+| `GET /api/search?q=&brand=&maxPrice=&inStock=&fuzzy=&page=&size=` | **Primary.** Elasticsearch with filters, facets and paging |
+| `GET /api/search/sql?q=&page=&size=` | SQL Server `LIKE` baseline |
+| `GET /api/search/sqlfts?q=&page=&size=` | SQL Server Full-Text Search baseline |
 | `GET /api/suggest?q=` | Autocomplete (`search_as_you_type`) |
 | `GET /api/products/{id}` | Product detail |
-| `GET /api/lookup/sql?sku=` | Exact indexed lookup -- the case SQL Server wins |
+| `GET /api/lookup/sql?sku=` | Exact indexed lookup — the case SQL Server wins |
 | `GET /api/health` | Per-dependency status, and whether data is seeded |
 | `GET /openapi/v1.json` | OpenAPI 3.1 document |
 
-Deep links work: `http://localhost:5080/?q=wireless+headphones&fuzzy=1`
+Deep links work: `http://localhost:5080/?q=wireless+headphone&fuzzy=1&brand=Sony&size=5`
 
 ## Project layout
 
 ```
-docker-compose.yml                        Elasticsearch 9.5.3 + SQL Server 2022
+docker-compose.yml                        Elasticsearch 9.5.3 + SQL Server 2022 (built, not pulled)
+docker/sqlserver/Dockerfile               SQL Server + Full-Text Search
 src/ProductSearch.Core/
-  ProductIndex.cs                         mapping, analyzers, alias  <- start here
-  SearchServices.cs                       both engines, side by side
+  ProductIndex.cs                         mapping, analyzers, alias, reindex  <- start here
+  SearchServices.cs                       all three engines, side by side
   Catalog.cs                              models, request and response contracts
   Diagnostics.cs                          dependency checks and hints
   Env.cs                                  connection settings with dev defaults
 src/ProductSearch.Api/
   Program.cs                              client registration, endpoints, error handling
   wwwroot/index.html                      demo UI
-src/ProductSearch.Seeder/                 200k products -> SQL -> bulk index
-src/ProductSearch.Benchmark/              p50/p95/p99 + throughput
+src/ProductSearch.Seeder/                 200k products -> SQL -> full-text index -> bulk index
+src/ProductSearch.Benchmark/              p50/p95/p99 + throughput, three engines
+tests/ProductSearch.Tests/                integration tests for the claims above
 docs/benchmark-results.md                 full results and method
 ```
 
 **Read `ProductIndex.cs` first.** Index design decides more about search quality and speed than any query.
+
+## Tests
+
+```powershell
+dotnet test
+```
+
+Seven tests, each protecting a specific claim in the article:
+
+| Test | Protects |
+| --- | --- |
+| `size=999` → 400 | The validation response the article shows |
+| missing `q` → 400 | The `[Required]` message |
+| `page=501` → 400 | The explained result-window error |
+| `page=500&size=20` → 200 | **Used to be a raw 500.** The look-ahead hit pushed `from + size` one past the window |
+| `?brand=sony\|Sony\|SONY` → hits | **Used to return nothing for lowercase.** The term filter was case-sensitive |
+
+They need the stack running and the catalog seeded; when it isn't, they skip with the command to run rather
+than failing.
 
 ---
 
 ## Configuration
 
 **Nothing needs configuring to run it.** Every setting has a local-development default, defined in one place:
-[`src/ProductSearch.Core/Env.cs`](src/ProductSearch.Core/Env.cs). No credentials live anywhere else in the source.
-
-Override any of them with environment variables:
+[`src/ProductSearch.Core/Env.cs`](src/ProductSearch.Core/Env.cs).
 
 | Variable | Default |
 | --- | --- |
@@ -422,12 +450,14 @@ Override any of them with environment variables:
 | `SQLSERVER_USER` | `sa` |
 | `MSSQL_SA_PASSWORD` | `Str0ng!Passw0rd` |
 | `SQLSERVER_CONNECTION` | built from the above — set it to replace the whole string |
+| `Elasticsearch:ApiKey` | none locally; **required outside Development** |
 
 The same two password variables are read by `docker-compose.yml`, so copying `.env.example` to `.env` and
 editing it changes both the containers and the apps at once (`.env` is gitignored).
 
-> These are throwaway credentials for containers that only listen on localhost. They are defaults for
-> convenience, not secrets. For anything real, use a proper secret store and enable TLS.
+> These are throwaway credentials for containers that only listen on localhost. **Outside Development the API
+> refuses to start without `Elasticsearch:ApiKey`** rather than quietly connecting as the built-in superuser —
+> a misconfigured deployment should fail at startup, not run on `elastic`/`changeme`.
 
 Seed a smaller catalog if your machine is tight:
 
@@ -461,36 +491,16 @@ and every search returns zero with no explanation. So the POC checks its own dep
 ```
 
 **In the seeder**, both engines are checked *before* 200,000 products are generated, so a stopped container is
-reported in a second rather than after a minute of wasted work. It exits with a non-zero code, which matters if
-you ever wire this into a script:
+reported in a second rather than after a minute of wasted work. Exit codes: `0` success, `1` dependencies
+unavailable, `2` seeded but some documents failed to index.
 
-```
-  Cannot seed - the required services are not available:
-
-  - Cannot reach SQL Server: A network-related or instance-specific error occurred...
-    Start it with: docker compose up -d
-    SQL Server takes longer to start than Elasticsearch, so give it a moment.
-```
-
-On success it tells you what to run next. Exit codes: `0` success, `1` dependencies unavailable,
-`2` seeded but some documents failed to index.
-
-**In the API**, every failure is a `ProblemDetails` response with a fix, not a stack trace:
-
-```jsonc
-{
-  "title": "Search index missing",
-  "status": 503,
-  "detail": "The 'products' index does not exist. Run the seeder first. Run: dotnet run --project ..."
-}
-```
+**In the API**, every failure is a `ProblemDetails` response with a fix, not a stack trace — and every failure
+is logged server-side with a `traceId` the caller can quote. Unexpected errors return a generic detail rather
+than raw internal text.
 
 **In the browser**, the page checks `/api/health` on load and shows what to run:
 
 ![Missing data warning](docs/screenshots/06-unseeded-warning.png)
-
-It also distinguishes *"no results for this query"* from *"nothing has been indexed yet"* — identical-looking
-states that mean completely different things.
 
 | Situation | Status | What you are told |
 | --- | --- | --- |
@@ -499,6 +509,7 @@ states that mean completely different things.
 | Page beyond 10,000 results | 400 | The `max_result_window` limit, and that deep paging needs `search_after` |
 | Index missing / not seeded | 503 | The exact seeder command |
 | Elasticsearch not started | 503 | That it needs ~60s, and `docker compose up -d` |
+| Full-text not installed | 503 | To rebuild the image with `docker compose up -d --build` |
 | SQL Server not ready | 503 | That it starts more slowly than Elasticsearch |
 | SQL timeout under load | 504 | That this is the expected finding, not a defect |
 | Unknown product id | 404 | The valid id range |
@@ -507,14 +518,16 @@ states that mean completely different things.
 
 | Problem | Fix |
 | --- | --- |
-| `curl : parameter name 'u' is ambiguous` | You are in Windows PowerShell, where `curl` aliases to `Invoke-WebRequest`. Use `curl.exe` instead. |
+| `curl : parameter name 'u' is ambiguous` | You are in Windows PowerShell, where `curl` aliases to `Invoke-WebRequest`. Use `curl.exe`. |
 | `Cannot connect to localhost:9200` | Elasticsearch needs ~60s. Poll `/_cluster/health`. |
 | Elasticsearch container exits | Raise Docker memory to 5 GB+. |
 | `Login failed for user 'sa'` | SQL Server starts slower than Elasticsearch. Wait, retry. |
+| Image build fails on certificate verification | Your network intercepts TLS — see [Behind a TLS-intercepting proxy](#behind-a-tls-intercepting-proxy). |
+| `/api/search/sqlfts` returns 503 | Full-text search is not installed. `docker compose up -d --build`, then re-seed. |
 | SQL search times out | Expected above ~10 concurrent users. That is the finding, not a bug. |
-| Build fails: "file is locked by ProductSearch.Api" | Fixed in this repo - the Seeder and Benchmark reference `ProductSearch.Core`, not the API executable, so you can re-seed while the API runs. |
+| Build fails: "file is locked by ProductSearch.Api" | The Seeder and Benchmark reference `ProductSearch.Core`, not the API executable, so you can re-seed while the API runs. |
 | Benchmark numbers look low | Stop the API first (Ctrl+C). If it is running it competes for the same CPU the benchmark is measuring. |
-| Both engines "look fast" when clicking | A single search is 1-3 s vs 0.03 s - survivable for one user. Run case 8; under 20 concurrent users SQL passes 40 seconds. |
+| All three "look fast" when clicking | A single search is survivable for one user. Run case 9; under 20 concurrent users `LIKE` passes two minutes. |
 | Port 5080 in use | `dotnet run --project src/ProductSearch.Api -- --urls http://localhost:5090` |
 
 ## Development-only warnings
@@ -533,13 +546,16 @@ Production needs multiple nodes, a considered replica count, TLS, and secrets in
 ## Conclusion
 
 - **Use a database** for exact lookups, ranges, joins and transactions. It wins those, by a lot.
-- **Use Elasticsearch** for text people actually type — plurals, typos, multi-word queries, facets, ranking.
-- The gap is **not just speed**. `LIKE` returned *zero results* for `wireless headphones`, after 4.9 seconds.
-- **Throughput is the real ceiling.** Scans cost the same whether 1 or 20 users are waiting; they simply queue.
+- **SQL Server Full-Text Search is a real option.** It fixes plurals, uses an index, and ranks results. If that
+  is the whole of your problem, it needs no new infrastructure and you should use it.
+- **It stops at typos, synonyms and facets** — and its throughput is as flat as `LIKE`'s under load.
+- **Use Elasticsearch** when search quality *is* the feature: ranking, typo tolerance, synonyms, facet counts
+  in one round trip, and throughput that grows with your traffic.
 - **Index design beats query tuning.** Field types, analyzers and multi-fields are chosen once and constrain
-  everything after.
+  everything after — and when they are wrong, they fail silently rather than loudly.
 - Keep both. The database stays the source of truth; Elasticsearch is a specialised read model beside it.
 
 ## Versions
 
-.NET 10 · Elasticsearch 9.5.3 · `Elastic.Clients.Elasticsearch` 9.5.2 · SQL Server 2022 · Bogus 35.6.5
+.NET 10 · Elasticsearch 9.5.3 · `Elastic.Clients.Elasticsearch` 9.5.3 · SQL Server 2022 + Full-Text Search ·
+Bogus 35.6.5

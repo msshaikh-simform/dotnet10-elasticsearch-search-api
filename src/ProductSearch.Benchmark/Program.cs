@@ -16,16 +16,23 @@ string[] queries = ["wireless", "bluetooth headphone", "gaming laptop", "sony sp
 var sqlConn = Env.SqlConnectionString;
 
 var sqlSvc = new SqlSearchService(sqlConn, commandTimeoutSeconds: 300);
+var ftsSvc = new SqlFullTextSearchService(sqlConn, commandTimeoutSeconds: 300);
+var ftsAvailable = await ftsSvc.IsAvailableAsync();
 var esSvc = new ElasticSearchService(new ElasticsearchClient(
     new ElasticsearchClientSettings(new Uri(Env.ElasticsearchUrl))
         .Authentication(new BasicAuthentication(Env.ElasticsearchUsername, Env.ElasticsearchPassword))
         .RequestTimeout(TimeSpan.FromMinutes(2))));
 
 Console.WriteLine($"Dataset: 200,000 products | {requests} requests per level | query mix of {queries.Length}");
+if (!ftsAvailable)
+    Console.WriteLine("  ! SQL Server Full-Text Search unavailable - that engine will be skipped.\n"
+                    + "    Rebuild the image and re-seed: docker compose up -d --build");
+
 Console.WriteLine("Warming up...");
 for (var i = 0; i < 5; i++)
 {
     await sqlSvc.SearchAsync(queries[i % queries.Length], 20, 1, default);
+    if (ftsAvailable) await ftsSvc.SearchAsync(queries[i % queries.Length], 20, 1, default);
     await esSvc.SearchAsync(new ProductSearchRequest { Q = queries[i % queries.Length], Size = 20 }, default);
 }
 
@@ -34,9 +41,16 @@ var rows = new List<Row>();
 foreach (var c in concurrency)
 {
     Console.WriteLine($"\nConcurrency {c}...");
-    rows.Add(await RunAsync("SQL Server", c, requests, queries,
+    rows.Add(await RunAsync("SQL LIKE", c, requests, queries,
         (q, ct) => sqlSvc.SearchAsync(q, 20, 1, ct)));
-    Console.WriteLine($"  SQL done");
+    Console.WriteLine($"  SQL LIKE done");
+
+    if (ftsAvailable)
+    {
+        rows.Add(await RunAsync("SQL Full-Text", c, requests, queries,
+            (q, ct) => ftsSvc.SearchAsync(q, 20, 1, ct)));
+        Console.WriteLine($"  SQL Full-Text done");
+    }
     rows.Add(await RunAsync("Elasticsearch", c, requests, queries,
         (q, ct) => esSvc.SearchAsync(new ProductSearchRequest { Q = q, Size = 20 }, ct)));
     Console.WriteLine($"  Elasticsearch done");
@@ -44,13 +58,16 @@ foreach (var c in concurrency)
 
 // The honest counter-example: an exact indexed lookup, where SQL Server wins.
 Console.WriteLine("\nExact SKU lookup (concurrency 1)...");
-var skuSql = await RunAsync("SQL Server", 1, requests, ["SKU-0100000"],
+var skuSql = await RunAsync("SQL LIKE", 1, requests, ["SKU-0100000"],
     (q, ct) => sqlSvc.GetBySkuAsync(q, ct));
+// A term query on the sku keyword - the same job the SQL side is doing.
+// This used to call SearchAsync, a scored multi_match over name/brand/description
+// that never queries sku, so it measured a search that matched nothing.
 var skuEs = await RunAsync("Elasticsearch", 1, requests, ["SKU-0100000"],
-    (q, ct) => esSvc.SearchAsync(new ProductSearchRequest { Q = q, Size = 20 }, ct));
+    (q, ct) => esSvc.GetBySkuAsync(q, ct));
 
 // ---- Report ----------------------------------------------------------------
-Console.WriteLine("\n\n## Full-text search: `LIKE '%term%'` vs Elasticsearch\n");
+Console.WriteLine("\n\n## Full-text search: three engines, identical data\n");
 Console.WriteLine("| Concurrency | Engine | p50 | p95 | p99 | Throughput | Failed |");
 Console.WriteLine("| --- | --- | --- | --- | --- | --- | --- |");
 foreach (var r in rows)

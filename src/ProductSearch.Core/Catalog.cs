@@ -58,6 +58,9 @@ public sealed record ProductSearchRequest
     [Range(0, 1_000_000, ErrorMessage = "maxPrice must be between 0 and 1,000,000")]
     public decimal? MaxPrice { get; init; }
 
+    /// <summary>Only products that are in stock. A yes/no condition, so it goes in filter context.</summary>
+    public bool? InStock { get; init; }
+
     /// <summary>Allow small spelling mistakes. Elasticsearch only; costs more, so it is opt-in.</summary>
     public bool? Fuzzy { get; init; }
 

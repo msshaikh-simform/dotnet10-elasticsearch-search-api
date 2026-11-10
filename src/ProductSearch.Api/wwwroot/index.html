@@ -7,7 +7,7 @@
 <style>
   :root {
     --purple:#6740BA; --deep:#380D6F; --violet:#A077F8; --lav:#F2ECFC; --lav2:#E0D0FA;
-    --coral:#EF5366; --teal:#0F8B7E; --teal-bg:#E6F4F2; --ink:#2A2A3E; --muted:#6E6B81; --line:#DCD6EA;
+    --coral:#EF5366; --teal:#0F8B7E; --amber:#A8651B; --amber-bg:#FBF1E2; --teal-bg:#E6F4F2; --ink:#2A2A3E; --muted:#6E6B81; --line:#DCD6EA;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:"Segoe UI",system-ui,sans-serif;background:#fff;color:var(--ink);padding:28px 22px 60px;max-width:1180px;margin:0 auto}
@@ -26,17 +26,20 @@
   .sg div{padding:9px 13px;font-size:14px;cursor:pointer;border-bottom:1px solid var(--lav)}
   .sg div:last-child{border-bottom:0}
   .sg div:hover{background:var(--lav)}
-  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:6px}
-  @media(max-width:860px){.cols{grid-template-columns:1fr}}
+  .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-top:6px}
+  @media(max-width:1200px){.cols{grid-template-columns:1fr}}
   .panel{border:1.6px solid var(--lav2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
   .panel.es{border-color:#C9E3DE}
+  .panel.fts{border-color:#F6D9A8}
   .phead{padding:12px 15px;color:#fff;display:flex;justify-content:space-between;align-items:baseline;gap:10px}
   .panel .phead{background:var(--purple)}
   .panel.es .phead{background:var(--teal)}
+  .panel.fts .phead{background:var(--amber)}
   .pname{font-size:15px;font-weight:700}
   .pengine{font-size:11px;letter-spacing:.9px;text-transform:uppercase;opacity:.85}
   .timing{padding:11px 15px;background:var(--lav);border-bottom:1px solid var(--lav2);display:flex;gap:18px;flex-wrap:wrap;font-size:13px}
   .panel.es .timing{background:var(--teal-bg);border-color:#C9E3DE}
+  .panel.fts .timing{background:var(--amber-bg);border-color:#F6D9A8}
   .timing b{font-size:19px;color:var(--deep);display:block}
   .body{padding:8px 15px 15px;flex:1;min-height:120px}
   .row{padding:9px 0;border-bottom:1px solid var(--lav);font-size:14px}
@@ -62,20 +65,24 @@
 </head>
 <body>
   <h1>SQL Server vs Elasticsearch</h1>
-  <div class="sub">The same search, the same 200,000 products, side by side. Timings are measured by the API on every request.</div>
+  <div class="sub">The same search, the same 200,000 products, three engines side by side &mdash;
+    <code>LIKE '%term%'</code>, SQL Server Full-Text Search, and Elasticsearch.
+    Timings are measured by the API on every request, and all three queries are fired at once,
+    so they compete for the same cores.</div>
 
   <div id="banner"></div>
 
   <div id="suggest">
     <div class="controls">
       <input id="q" type="text" placeholder="Try: wireless headphones" autocomplete="off">
-      <button id="go">Search both</button>
+      <button id="go">Search all three</button>
     </div>
     <div id="sg"></div>
   </div>
 
   <div class="opts">
     <label><input type="checkbox" id="fuzzy"> typo tolerance (Elasticsearch only)</label>
+    <label><input type="checkbox" id="inStock"> in stock only (filter context)</label>
     <label>max price <input type="number" id="maxPrice" placeholder="any" min="0"></label>
     <span>
       try:
@@ -91,6 +98,11 @@
       <div class="phead"><span class="pname">SQL Server</span><span class="pengine">LIKE '%term%'</span></div>
       <div class="timing"><span>elapsed<b id="sqlMs">—</b></span><span>results<b id="sqlCount">—</b></span></div>
       <div class="body" id="sqlBody"></div>
+    </div>
+    <div class="panel fts">
+      <div class="phead"><span class="pname">SQL Server</span><span class="pengine">full-text · FREETEXT</span></div>
+      <div class="timing"><span>elapsed<b id="ftsMs">—</b></span><span>results<b id="ftsCount">—</b></span></div>
+      <div class="body" id="ftsBody"></div>
     </div>
     <div class="panel es">
       <div class="phead"><span class="pname">Elasticsearch</span><span class="pengine">inverted index</span></div>
@@ -108,6 +120,7 @@
 
 <script>
 let brandFilter = null;
+let pageSize = 20;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -174,16 +187,28 @@ async function search() {
   const q = $('q').value.trim();
   if (!q) return;
   $('go').disabled = true;
-  $('sqlBody').innerHTML = $('esBody').innerHTML = '<div class="meta" style="padding:14px 0">running…</div>';
-  $('sqlMs').textContent = $('esMs').textContent = '…';
+  $('sqlBody').innerHTML = $('ftsBody').innerHTML = $('esBody').innerHTML =
+    '<div class="meta" style="padding:14px 0">running…</div>';
+  $('sqlMs').textContent = $('ftsMs').textContent = $('esMs').textContent = '…';
 
   const price = $('maxPrice').value;
-  const esUrl = `/api/search?q=${encodeURIComponent(q)}&fuzzy=${$('fuzzy').checked}`
+  const esUrl = `/api/search?q=${encodeURIComponent(q)}&fuzzy=${$('fuzzy').checked}&size=${pageSize}`
+    + ($('inStock').checked ? '&inStock=true' : '')
     + (price ? `&maxPrice=${price}` : '') + (brandFilter ? `&brand=${encodeURIComponent(brandFilter)}` : '');
 
   // Fired together so the difference is visible in real time.
   const esP = call(esUrl);
-  const sqlP = call(`/api/search/sql?q=${encodeURIComponent(q)}`);
+  const sqlP = call(`/api/search/sql?q=${encodeURIComponent(q)}&size=${pageSize}`);
+  const ftsP = call(`/api/search/sqlfts?q=${encodeURIComponent(q)}&size=${pageSize}`);
+
+  ftsP.then(d => {
+    $('ftsMs').textContent = d.elapsedMs + ' ms';
+    $('ftsCount').textContent = d.count;
+    $('ftsBody').innerHTML = rows(d.items);
+  }).catch(e => {
+    $('ftsMs').textContent = $('ftsCount').textContent = '—';
+    $('ftsBody').innerHTML = problem(e);
+  });
 
   esP.then(d => {
     $('esMs').textContent = d.elapsedMs + ' ms';
@@ -209,7 +234,7 @@ async function search() {
     $('sqlBody').innerHTML = problem(e);
   });
 
-  await Promise.allSettled([esP, sqlP]);
+  await Promise.allSettled([esP, sqlP, ftsP]);
   $('go').disabled = false;
 }
 
@@ -239,7 +264,10 @@ checkHealth();
   if (!p.get('q')) return;
   $('q').value = p.get('q');
   $('fuzzy').checked = p.get('fuzzy') === '1';
+  $('inStock').checked = p.get('inStock') === 'true';
   if (p.get('maxPrice')) $('maxPrice').value = p.get('maxPrice');
+  if (p.get('brand')) brandFilter = p.get('brand');
+  if (p.get('size')) pageSize = Math.max(1, Math.min(100, parseInt(p.get('size'), 10) || 20));
   search();
 })();
 

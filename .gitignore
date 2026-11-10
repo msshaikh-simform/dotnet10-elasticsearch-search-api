@@ -3,3 +3,7 @@ obj/
 .vs/
 *.user
 .env
+
+# Corporate CA certificates for the optional SQL Server full-text image build
+docker/sqlserver/certs/*
+!docker/sqlserver/certs/.gitkeep

@@ -5,4 +5,7 @@
     <Project Path="src/ProductSearch.Core/ProductSearch.Core.csproj" />
     <Project Path="src/ProductSearch.Seeder/ProductSearch.Seeder.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ProductSearch.Tests/ProductSearch.Tests.csproj" />
+  </Folder>
 </Solution>

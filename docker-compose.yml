@@ -20,7 +20,12 @@ services:
       retries: 30
 
   sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    # Built, not pulled: the stock image has no Full-Text Search, and this
+    # project measures the FREETEXT baseline as well as the LIKE one.
+    # First build takes a few minutes; Docker caches it afterwards.
+    build:
+      context: ./docker/sqlserver
+    image: ps-sqlserver-fts:local
     container_name: ps-sqlserver
     environment:
       - ACCEPT_EULA=Y
